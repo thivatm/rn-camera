@@ -90,13 +90,14 @@ function flatten(headers: http.IncomingHttpHeaders): Record<string, string> {
 }
 
 /**
- * Node file / storage / signal primitives. The key/value store is in memory
- * and connectivity is driven by the test through `setConnectivity`.
+ * Node file / storage / signal primitives. The key/value store is the `kv`
+ * map (pass the same map to a second platform to simulate a relaunch) and
+ * connectivity is driven by the test through `setConnectivity`.
  */
 export function createNodePlatform(
-  initial: ConnectivityState = { isConnected: true, networkType: 'wifi' }
+  initial: ConnectivityState = { isConnected: true, networkType: 'wifi' },
+  kv: Map<string, string> = new Map()
 ): Platform & { setConnectivity(state: ConnectivityState): void } {
-  const kv = new Map<string, string>();
   const listeners = new Set<(state: ConnectivityState) => void>();
   let connectivity = initial;
   const io = async <T>(fn: () => Promise<T>): Promise<T> => {

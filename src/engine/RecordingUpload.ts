@@ -55,6 +55,16 @@ export type RecordingUploadOptions = {
    * Omit for the Live Recording and report growth with `fileGrew`.
    */
   finishedSize?: number;
+  /**
+   * State persisted before a relaunch (spec §6). Requires `finishedSize`. The
+   * engine starts in `status` without calling the provider; a `paused` /
+   * `awaitingResume` upload waits for `resume`.
+   */
+  restored?: {
+    status: UploadStatus;
+    target: UploadTarget | null;
+    committedOffset: number;
+  };
   /** Timer for retry backoff. Default: `setTimeout`. */
   schedule?: Schedule;
   /** A value in `[0, 1)`, for backoff jitter. Default: `Math.random`. */
@@ -71,6 +81,8 @@ export type RecordingUploadSnapshot = {
   recordedBytes: number;
   committedOffset: number;
   isLive: boolean;
+  /** The current Upload Target, once the provider returned one. */
+  target: UploadTarget | null;
 };
 
 const defaultSchedule: Schedule = (callback, ms) => {
@@ -119,6 +131,12 @@ export class RecordingUpload {
     this.random = options.random ?? Math.random;
     this.isLive = options.finishedSize === undefined;
     this.recordedBytes = options.finishedSize ?? 0;
+    if (options.restored) {
+      if (this.isLive) throw new Error('A restored upload needs finishedSize');
+      this.status = options.restored.status;
+      this.target = options.restored.target;
+      this.committedOffset = options.restored.committedOffset;
+    }
   }
 
   /** Calls the Upload URL Provider, then uploads as the file grows. Call once. */
@@ -127,6 +145,32 @@ export class RecordingUpload {
     this.started = true;
     this.watchConnectivity();
     this.requestTarget(this.provider);
+  }
+
+  /**
+   * Restarts a restored `paused` / `awaitingResume` upload (spec §6): a status
+   * query to its stored Upload Target, or, without one, a call to
+   * `uploadUrlProvider`. A no-op in any other state.
+   */
+  resume(uploadUrlProvider: UploadUrlProvider): void {
+    if (
+      this.cancelled ||
+      this.status.state !== 'paused' ||
+      this.status.pauseReason !== 'awaitingResume'
+    ) {
+      return;
+    }
+    this.started = true;
+    this.provider = uploadUrlProvider;
+    this.watchConnectivity();
+    if (this.target) {
+      this.needsStatusQuery = true;
+      this.dispatch({ type: 'resumed' });
+      this.pump();
+    } else {
+      this.dispatch({ type: 'targetRequested' });
+      this.requestTarget(this.provider);
+    }
   }
 
   /** The Recording File is now `recordedBytes` long. */
@@ -187,6 +231,7 @@ export class RecordingUpload {
       recordedBytes: this.recordedBytes,
       committedOffset: this.committedOffset,
       isLive: this.isLive,
+      target: this.target,
     };
   }
 

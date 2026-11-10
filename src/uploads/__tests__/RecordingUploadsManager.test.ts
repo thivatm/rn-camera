@@ -385,12 +385,3 @@ describe('addListener', () => {
     expect(removed).toEqual([]);
   });
 });
-
-describe('resumeUploads', () => {
-  test('resolves (stub until relaunch support)', async () => {
-    const { uploads } = manager();
-    await expect(
-      uploads.resumeUploads({ uploadUrlProvider: async () => ({ url: '' }) })
-    ).resolves.toBeUndefined();
-  });
-});

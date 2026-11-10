@@ -20,6 +20,8 @@ export type UploadEvent =
   /** Sending stops for `reason` (e.g. offline) until `resumed`. */
   | { type: 'paused'; reason: PauseReason }
   | { type: 'resumed' }
+  /** Resuming an upload that has no Upload Target yet: ask the provider. */
+  | { type: 'targetRequested' }
   /** Retry Upload: a fresh Upload Target, from byte 0. */
   | { type: 'retryRequested' };
 
@@ -59,6 +61,7 @@ export function transition(
     case 'paused':
       // Resuming re-enters `uploading`; the final Chunk re-enters `finalizing`.
       if (event.type === 'resumed') return { state: 'uploading' };
+      if (event.type === 'targetRequested') return INITIAL_UPLOAD_STATUS;
       if (event.type === 'paused') {
         return { state: 'paused', pauseReason: event.reason };
       }
