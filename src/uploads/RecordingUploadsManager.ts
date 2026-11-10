@@ -6,6 +6,7 @@ import {
   RecordingUpload,
   type RecordingUploadOptions,
   type Schedule,
+  type SchedulerPauseReason,
 } from '../engine/RecordingUpload';
 import { truncateToLastCompleteFragment } from '../engine/fragmentedMp4';
 import type { Platform, Transport } from '../engine/transport';
@@ -56,9 +57,23 @@ export type RecordingUploadsEventName = keyof RecordingUploadsEvents;
 
 export type Subscription = { remove(): void };
 
+/**
+ * The app's foreground / background state: React Native's `AppState`, or a
+ * stand-in in Jest. Only `'background'` counts as backgrounded.
+ */
+export type AppStateSource = {
+  currentState?: string | null;
+  addEventListener(
+    type: 'change',
+    listener: (state: string) => void
+  ): { remove(): void };
+};
+
 export type RecordingUploadsManagerOptions = {
   transport: Transport;
   platform: Platform;
+  /** Backgrounding pauses every upload (§5.5). Default: always foreground. */
+  appState?: AppStateSource;
   /** Milliseconds since the epoch, for `createdAt` and throttling. Default: `Date.now`. */
   now?: () => number;
   /** Timer for progress throttling and retry backoff. Default: `setTimeout`. */
@@ -128,6 +143,14 @@ export class RecordingUploadsManager {
   private readonly now: () => number;
   private readonly schedule: Schedule;
   private readonly entries = new Map<RecordingId, Entry>();
+  /**
+   * The Upload Queue (§5.5): Finished Recordings whose upload is scheduled,
+   * in the order they drain. Restored uploads join on `resumeUploads`.
+   */
+  private queue: RecordingId[] = [];
+  private backgrounded: boolean;
+  private rescheduling = false;
+  private rescheduleAgain = false;
   /** Restoring the persisted Recordings; the public API waits for it. */
   private readonly restored: Promise<void>;
   /** Key/value operations, one at a time and in order, after the restore. */
@@ -148,6 +171,12 @@ export class RecordingUploadsManager {
     this.schedule = options.schedule ?? defaultSchedule;
     this.restored = this.restore().catch(() => {});
     this.storage = this.restored;
+    const { appState } = options;
+    this.backgrounded = appState?.currentState === 'background';
+    appState?.addEventListener('change', (state) => {
+      this.backgrounded = state === 'background';
+      this.reschedule();
+    });
   }
 
   // ---- Public API (§3.3)
@@ -167,7 +196,11 @@ export class RecordingUploadsManager {
     opts: { uploadUrlProvider: UploadUrlProvider }
   ): Promise<void> {
     await this.restored;
-    this.entry(recordingId).engine.retryUpload(opts.uploadUrlProvider);
+    const entry = this.entry(recordingId);
+    if (entry.engine.snapshot().status.state !== 'failed') return;
+    if (!entry.engine.snapshot().isLive) this.enqueue(entry.id);
+    this.reschedule();
+    entry.engine.retryUpload(opts.uploadUrlProvider);
   }
 
   /**
@@ -182,8 +215,10 @@ export class RecordingUploadsManager {
       throw new Error(`Recording ${recordingId} is live`);
     }
     this.entries.delete(recordingId);
+    this.queue = this.queue.filter((id) => id !== recordingId);
     entry.engine.cancel();
     entry.progress.cancel();
+    this.reschedule();
     const { platform } = this.options;
     this.enqueueStorage(() => platform.kvRemove(recordingKey(recordingId)));
     this.persistIndex();
@@ -191,17 +226,21 @@ export class RecordingUploadsManager {
   }
 
   /**
-   * Restarts the uploads paused by a relaunch (§6): each one sends a status
-   * query to its stored Upload Target; one without a target asks
-   * `uploadUrlProvider`. Other uploads are left alone.
+   * Puts the uploads paused by a relaunch (§6) in the Upload Queue, oldest
+   * first. Each one, on its turn, sends a status query to its stored Upload
+   * Target; one without a target asks `uploadUrlProvider`. Other uploads are
+   * left alone.
    */
   async resumeUploads(opts: {
     uploadUrlProvider: UploadUrlProvider;
   }): Promise<void> {
     await this.restored;
-    for (const entry of [...this.entries.values()]) {
-      entry.engine.resume(opts.uploadUrlProvider);
-    }
+    const awaiting = [...this.entries.values()].filter(
+      (entry) => entry.engine.snapshot().status.pauseReason === 'awaitingResume'
+    );
+    for (const entry of awaiting) this.enqueue(entry.id);
+    this.reschedule();
+    for (const entry of awaiting) entry.engine.resume(opts.uploadUrlProvider);
   }
 
   addListener<E extends RecordingUploadsEventName>(
@@ -251,10 +290,12 @@ export class RecordingUploadsManager {
       filePath,
       uploadUrlProvider: options.uploadUrlProvider,
       minChunkSize: options.minChunkSize,
+      allowCellular: entry.allowCellular,
     });
     this.entries.set(recordingId, entry);
     this.persist(entry);
     this.persistIndex();
+    this.reschedule();
     entry.engine.start();
   }
 
@@ -273,8 +314,15 @@ export class RecordingUploadsManager {
     const entry = this.liveEntry(recordingId);
     entry.stopReason = stop.reason;
     entry.engine.recordingStopped(stop.finalSize);
+    // Its upload is already running: it drains first, ahead of the uploads
+    // the Live Recording held back.
+    const { state } = entry.engine.snapshot().status;
+    if (state !== 'completed' && state !== 'failed') {
+      this.queue.unshift(entry.id);
+    }
     this.persist(entry);
     entry.progress.request();
+    this.reschedule();
   }
 
   /** The Live Recording, if any. */
@@ -283,6 +331,64 @@ export class RecordingUploadsManager {
       if (entry.engine.snapshot().isLive) return entry.id;
     }
     return null;
+  }
+
+  // ---- Scheduling (§5.5)
+
+  private enqueue(recordingId: RecordingId): void {
+    if (!this.queue.includes(recordingId)) this.queue.push(recordingId);
+  }
+
+  /**
+   * Tells every upload whether it may run: none while backgrounded; the Live
+   * Recording first; then the head of the Upload Queue, one at a time.
+   */
+  private reschedule(): void {
+    if (this.rescheduling) {
+      this.rescheduleAgain = true;
+      return;
+    }
+    this.rescheduling = true;
+    try {
+      do {
+        this.rescheduleAgain = false;
+        const live = this.liveRecordingId();
+        const head = live === null ? this.queue[0] : undefined;
+        for (const entry of [...this.entries.values()]) {
+          let hold: SchedulerPauseReason | null = null;
+          if (this.backgrounded) hold = 'backgrounded';
+          else if (entry.id !== live && entry.id !== head) {
+            hold = 'deprioritized';
+          }
+          entry.engine.setHold(hold);
+        }
+      } while (this.rescheduleAgain);
+    } finally {
+      this.rescheduling = false;
+    }
+  }
+
+  /** The upload settled: it leaves the Upload Queue. */
+  private onSettled(entry: Entry, status: UploadStatus): void {
+    this.queue = this.queue.filter((id) => id !== entry.id);
+    if (status.state === 'completed' && !entry.keepRecordingFile) {
+      this.deleteFileAfterUpload(entry);
+    }
+    this.reschedule();
+  }
+
+  /** Keep Recording File = false (§7): only after Upload Complete. */
+  private deleteFileAfterUpload(entry: Entry): void {
+    const { filePath } = entry;
+    if (!filePath) return;
+    this.options.platform.deleteFile(filePath).then(
+      () => {
+        if (entry.filePath !== filePath) return;
+        entry.filePath = null;
+        this.persist(entry);
+      },
+      () => {}
+    );
   }
 
   // ---- Persistence (§6)
@@ -339,6 +445,7 @@ export class RecordingUploadsManager {
       filePath: record.filePath ?? '',
       uploadUrlProvider: noProvider,
       minChunkSize: record.minChunkSize,
+      allowCellular: record.allowCellular,
       finishedSize: recordedBytes,
       restored: {
         status,
@@ -425,6 +532,7 @@ export class RecordingUploadsManager {
       | 'filePath'
       | 'uploadUrlProvider'
       | 'minChunkSize'
+      | 'allowCellular'
       | 'finishedSize'
       | 'restored'
     >
@@ -440,6 +548,12 @@ export class RecordingUploadsManager {
       onStateChange: (status) => {
         this.persist(entry);
         this.onStateChange(entry, status);
+        if (
+          this.entries.get(entry.id) === entry &&
+          (status.state === 'completed' || status.state === 'failed')
+        ) {
+          this.onSettled(entry, status);
+        }
       },
       onProgress: () => {
         this.persist(entry);

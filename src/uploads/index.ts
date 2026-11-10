@@ -1,5 +1,6 @@
 // The app-wide Recording registry over the native `RecordingUploads` Turbo
 // Module, and the public `RecordingUploads` object (spec §3.3).
+import { AppState } from 'react-native';
 import {
   createNativePlatform,
   createNativeTransport,
@@ -23,6 +24,7 @@ export function getRecordingUploadsManager(): RecordingUploadsManager {
     manager = new RecordingUploadsManager({
       transport: createNativeTransport(NativeRecordingUploads),
       platform: createNativePlatform(NativeRecordingUploads),
+      appState: AppState,
     });
   }
   return manager;
@@ -55,6 +57,7 @@ export type {
   RecordingUploadsEventName,
   RecordingUploadsEvents,
   RecordingUploadsManagerOptions,
+  AppStateSource,
   Subscription,
   UploadErrorEvent,
   UploadProgressEvent,

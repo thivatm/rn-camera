@@ -3,6 +3,7 @@
 // UploadProtocol / Transport seam, so the engine never touches video bytes.
 import type {
   Metadata,
+  PauseReason,
   RecordingId,
   UploadError,
   UploadTarget,
@@ -14,7 +15,7 @@ import {
   planNextChunk,
   type ChunkPlan,
 } from './chunkSizing';
-import type { Platform, Transport } from './transport';
+import type { NetworkType, Platform, Transport } from './transport';
 import {
   createResumableProtocol,
   type ProtocolReply,
@@ -51,6 +52,13 @@ export type RecordingUploadOptions = {
   /** Bytes, multiple of 256 KiB. Default 1 MiB. */
   minChunkSize?: number;
   /**
+   * Allow Cellular (spec §5.5). When `false`, a Finished Recording's upload
+   * that restarts (after a pause, or a Retry Upload) while on `cellular`
+   * waits as `paused` / `awaitingWifi`; an upload that is already running
+   * carries on. Default `true`.
+   */
+  allowCellular?: boolean;
+  /**
    * Set for a Finished Recording (e.g. from the Upload Queue): its final size.
    * Omit for the Live Recording and report growth with `fileGrew`.
    */
@@ -75,6 +83,9 @@ export type RecordingUploadOptions = {
     committedOffset: number;
   }) => void;
 };
+
+/** Pauses the scheduler imposes on an upload (spec §5.5). */
+export type SchedulerPauseReason = 'backgrounded' | 'deprioritized';
 
 export type RecordingUploadSnapshot = {
   status: UploadStatus;
@@ -119,6 +130,18 @@ export class RecordingUpload {
   /** Ends a pending backoff wait early. */
   private stopBackoff: (() => void) | null = null;
   private online = true;
+  private networkType: NetworkType | null = null;
+  /** Connectivity was reported at least once (always, without a platform). */
+  private connectivityKnown: boolean;
+  /** A pause imposed by the scheduler (spec §5.5), see `setHold`. */
+  private hold: SchedulerPauseReason | null = null;
+  /**
+   * The upload was paused (or is a Retry Upload of a Finished Recording):
+   * restarting it is subject to Allow Cellular.
+   */
+  private restarting = false;
+  /** `resume` was called on a `paused` / `awaitingResume` upload. */
+  private resumeRequested = false;
   private connectivitySubscription: { remove(): void } | null = null;
   private readonly settledWaiters: Array<(status: UploadStatus) => void> = [];
 
@@ -131,9 +154,11 @@ export class RecordingUpload {
     this.random = options.random ?? Math.random;
     this.isLive = options.finishedSize === undefined;
     this.recordedBytes = options.finishedSize ?? 0;
+    this.connectivityKnown = !options.platform;
     if (options.restored) {
       if (this.isLive) throw new Error('A restored upload needs finishedSize');
       this.status = options.restored.status;
+      this.restarting = true;
       this.target = options.restored.target;
       this.committedOffset = options.restored.committedOffset;
     }
@@ -162,15 +187,22 @@ export class RecordingUpload {
     }
     this.started = true;
     this.provider = uploadUrlProvider;
+    this.resumeRequested = true;
+    if (this.target) this.needsStatusQuery = true;
     this.watchConnectivity();
-    if (this.target) {
-      this.needsStatusQuery = true;
-      this.dispatch({ type: 'resumed' });
-      this.pump();
-    } else {
-      this.dispatch({ type: 'targetRequested' });
-      this.requestTarget(this.provider);
-    }
+    this.reevaluate();
+  }
+
+  /**
+   * The scheduler's pause (spec §5.5): `backgrounded` or `deprioritized`
+   * stops a running upload and keeps a paused or not-yet-started one from
+   * starting; `null` lets it (re)start. A restored upload still waits for
+   * `resume`.
+   */
+  setHold(reason: SchedulerPauseReason | null): void {
+    if (this.cancelled || this.hold === reason) return;
+    this.hold = reason;
+    this.reevaluate();
   }
 
   /** The Recording File is now `recordedBytes` long. */
@@ -198,6 +230,7 @@ export class RecordingUpload {
   retryUpload(uploadUrlProvider?: UploadUrlProvider): void {
     if (this.cancelled || this.status.state !== 'failed') return;
     if (uploadUrlProvider) this.provider = uploadUrlProvider;
+    if (!this.isLive) this.restarting = true;
     this.epoch++;
     this.target = null;
     this.needsStatusQuery = false;
@@ -250,9 +283,7 @@ export class RecordingUpload {
         (target) => {
           if (epoch !== this.epoch) return;
           this.target = target;
-          this.dispatch({ type: 'uploadTargetReceived' });
-          if (this.online) this.pump();
-          else this.pause('offline');
+          this.reevaluate();
         },
         (error: unknown) => {
           if (epoch !== this.epoch) return;
@@ -268,8 +299,11 @@ export class RecordingUpload {
     if (this.cancelled) return;
     const next = transition(this.status, event);
     if (next === this.status) return;
-    const changed = next.state !== this.status.state;
+    const changed =
+      next.state !== this.status.state ||
+      next.pauseReason !== this.status.pauseReason;
     this.status = next;
+    if (next.state === 'paused') this.restarting = true;
     if (changed) this.options.onStateChange?.(next);
     if (isSettled(next)) {
       this.connectivitySubscription?.remove();
@@ -284,33 +318,85 @@ export class RecordingUpload {
     let changed = false;
     this.connectivitySubscription = platform.onConnectivityChange((state) => {
       changed = true;
-      this.setOnline(state.isConnected);
+      this.setConnectivity(state.isConnected, state.networkType);
     });
     platform.getConnectivity().then(
       (state) => {
-        if (!changed) this.setOnline(state.isConnected);
+        if (!changed)
+          this.setConnectivity(state.isConnected, state.networkType);
       },
-      () => {}
+      () => {
+        // Unknown: assume online on any network.
+        if (!changed) this.setConnectivity(true, null);
+      }
     );
   }
 
-  private setOnline(online: boolean): void {
+  private setConnectivity(online: boolean, networkType: NetworkType | null) {
     if (this.cancelled) return;
     this.online = online;
-    if (!online && isSending(this.status)) {
-      this.pause('offline');
-    } else if (
-      online &&
-      this.status.state === 'paused' &&
-      this.status.pauseReason === 'offline'
-    ) {
+    this.networkType = networkType;
+    this.connectivityKnown = true;
+    this.reevaluate();
+  }
+
+  /**
+   * Applies the pause rules (spec §5.5) to the current status. A running
+   * upload pauses when held or offline, but never for Wi-Fi; one that is
+   * about to (re)start also waits for Wi-Fi when it may not use cellular.
+   */
+  private reevaluate(): void {
+    if (this.cancelled) return;
+    const { status } = this;
+    if (isSending(status)) {
+      const reason = this.hold ?? (this.online ? null : 'offline');
+      if (reason) this.pause(reason);
+      return;
+    }
+    const startable =
+      (status.state === 'waitingForUrl' && this.target !== null) ||
+      (status.state === 'paused' &&
+        (status.pauseReason !== 'awaitingResume' || this.resumeRequested));
+    if (!startable || !this.connectivityKnown) return;
+
+    const reason = this.startBlocker();
+    if (reason) {
+      if (status.state !== 'paused' || status.pauseReason !== reason) {
+        this.dispatch({ type: 'paused', reason });
+      }
+      return;
+    }
+    this.resumeRequested = false;
+    if (status.state === 'waitingForUrl') {
+      this.dispatch({ type: 'uploadTargetReceived' });
+      this.pump();
+    } else if (this.target) {
       this.dispatch({ type: 'resumed' });
       this.pump();
+    } else {
+      this.dispatch({ type: 'targetRequested' });
+      this.requestTarget(this.provider);
     }
   }
 
+  /** Why an upload that is not running may not start now, if anything. */
+  private startBlocker(): PauseReason | null {
+    if (this.hold) return this.hold;
+    if (!this.online) return 'offline';
+    const allowCellular = this.options.allowCellular ?? true;
+    if (
+      this.restarting &&
+      !this.isLive &&
+      !allowCellular &&
+      this.networkType === 'cellular'
+    ) {
+      return 'awaitingWifi';
+    }
+    return null;
+  }
+
   /** Stops sending: cancels the in-flight request and any backoff wait. */
-  private pause(reason: 'offline'): void {
+  private pause(reason: PauseReason): void {
     this.epoch++;
     this.dispatch({ type: 'paused', reason });
     this.stopBackoff?.();

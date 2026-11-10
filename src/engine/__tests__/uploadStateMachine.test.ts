@@ -57,6 +57,15 @@ describe('§5.6 upload state machine (happy path)', () => {
     }
   });
 
+  test('an upload that may not start when its Upload Target arrives goes straight to paused', () => {
+    expect(
+      transition(
+        { state: 'waitingForUrl' },
+        { type: 'paused', reason: 'deprioritized' }
+      )
+    ).toEqual({ state: 'paused', pauseReason: 'deprioritized' });
+  });
+
   test('Retry Upload takes a failed upload back to waitingForUrl', () => {
     const failed: UploadStatus = {
       state: 'failed',

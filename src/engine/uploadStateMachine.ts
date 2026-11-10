@@ -38,6 +38,10 @@ export function transition(
   switch (status.state) {
     case 'waitingForUrl':
       if (event.type === 'uploadTargetReceived') return { state: 'uploading' };
+      // The Upload Target arrived but the upload may not start yet.
+      if (event.type === 'paused') {
+        return { state: 'paused', pauseReason: event.reason };
+      }
       if (event.type === 'uploadUrlProviderFailed') {
         return {
           state: 'failed',
