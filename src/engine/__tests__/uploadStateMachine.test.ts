@@ -44,6 +44,35 @@ describe('§5.6 upload state machine (happy path)', () => {
     ).toEqual({ state: 'failed', error });
   });
 
+  test('going offline pauses uploading or finalizing; resuming re-enters uploading', () => {
+    for (const state of ['uploading', 'finalizing'] as const) {
+      const paused = transition(
+        { state },
+        { type: 'paused', reason: 'offline' }
+      );
+      expect(paused).toEqual({ state: 'paused', pauseReason: 'offline' });
+      expect(transition(paused, { type: 'resumed' })).toEqual({
+        state: 'uploading',
+      });
+    }
+  });
+
+  test('Retry Upload takes a failed upload back to waitingForUrl', () => {
+    const failed: UploadStatus = {
+      state: 'failed',
+      error: { code: 'urlRejected', httpStatus: 410, message: 'gone' },
+    };
+    expect(transition(failed, { type: 'retryRequested' })).toEqual({
+      state: 'waitingForUrl',
+    });
+    expect(() =>
+      transition({ state: 'completed' }, { type: 'retryRequested' })
+    ).toThrow();
+    expect(() =>
+      transition({ state: 'uploading' }, { type: 'retryRequested' })
+    ).toThrow();
+  });
+
   test('events that do not apply to a state throw', () => {
     expect(() =>
       transition({ state: 'completed' }, { type: 'uploadTargetReceived' })

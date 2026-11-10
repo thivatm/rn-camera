@@ -16,7 +16,12 @@ export type UploadEvent =
   | { type: 'finalChunkStarted' }
   /** Upload Complete (the Upload URL answered `200`/`201`). */
   | { type: 'uploadCompleted' }
-  | { type: 'uploadFailed'; error: UploadError };
+  | { type: 'uploadFailed'; error: UploadError }
+  /** Sending stops for `reason` (e.g. offline) until `resumed`. */
+  | { type: 'paused'; reason: PauseReason }
+  | { type: 'resumed' }
+  /** Retry Upload: a fresh Upload Target, from byte 0. */
+  | { type: 'retryRequested' };
 
 export const INITIAL_UPLOAD_STATUS: UploadStatus = { state: 'waitingForUrl' };
 
@@ -47,10 +52,21 @@ export function transition(
       if (event.type === 'uploadFailed') {
         return { state: 'failed', error: event.error };
       }
+      if (event.type === 'paused') {
+        return { state: 'paused', pauseReason: event.reason };
+      }
       break;
     case 'paused':
-    case 'completed':
+      // Resuming re-enters `uploading`; the final Chunk re-enters `finalizing`.
+      if (event.type === 'resumed') return { state: 'uploading' };
+      if (event.type === 'paused') {
+        return { state: 'paused', pauseReason: event.reason };
+      }
+      break;
     case 'failed':
+      if (event.type === 'retryRequested') return INITIAL_UPLOAD_STATUS;
+      break;
+    case 'completed':
       break;
   }
   throw new Error(`Invalid upload transition: ${status.state} + ${event.type}`);

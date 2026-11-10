@@ -1,6 +1,6 @@
-// Upload engine for one Recording (spec §5.1, §5.2, §5.6). Drives the pure
-// chunk sizing and state machine; all I/O goes through the UploadProtocol /
-// Transport seam, so the engine never touches video bytes.
+// Upload engine for one Recording (spec §5.1 – §5.4, §5.6). Drives the pure
+// chunk sizing, backoff and state machine; all I/O goes through the
+// UploadProtocol / Transport seam, so the engine never touches video bytes.
 import type {
   Metadata,
   RecordingId,
@@ -8,19 +8,33 @@ import type {
   UploadTarget,
   UploadUrlProvider,
 } from '../types';
+import { backoffDelay } from './backoff';
 import {
   DEFAULT_MIN_CHUNK_SIZE,
   planNextChunk,
   type ChunkPlan,
 } from './chunkSizing';
-import type { Transport } from './transport';
-import { createResumableProtocol, type UploadProtocol } from './uploadProtocol';
+import type { Platform, Transport } from './transport';
+import {
+  createResumableProtocol,
+  type ProtocolReply,
+  type UploadProtocol,
+} from './uploadProtocol';
 import {
   INITIAL_UPLOAD_STATUS,
   transition,
   type UploadEvent,
   type UploadStatus,
 } from './uploadStateMachine';
+
+/** Runs `callback` after `ms` milliseconds; returns a function that cancels it. */
+export type Schedule = (callback: () => void, ms: number) => () => void;
+
+/** The Platform primitives the engine uses: connectivity and file size. */
+export type UploadPlatform = Pick<
+  Platform,
+  'getFileSize' | 'getConnectivity' | 'onConnectivityChange'
+>;
 
 export type RecordingUploadOptions = {
   recordingId: RecordingId;
@@ -29,6 +43,11 @@ export type RecordingUploadOptions = {
   filePath: string;
   uploadUrlProvider: UploadUrlProvider;
   transport: Transport;
+  /**
+   * Connectivity (offline pauses the upload) and file checks. Without it the
+   * engine assumes it is always online.
+   */
+  platform?: UploadPlatform;
   /** Bytes, multiple of 256 KiB. Default 1 MiB. */
   minChunkSize?: number;
   /**
@@ -36,6 +55,10 @@ export type RecordingUploadOptions = {
    * Omit for the Live Recording and report growth with `fileGrew`.
    */
   finishedSize?: number;
+  /** Timer for retry backoff. Default: `setTimeout`. */
+  schedule?: Schedule;
+  /** A value in `[0, 1)`, for backoff jitter. Default: `Math.random`. */
+  random?: () => number;
   onStateChange?: (status: UploadStatus) => void;
   onProgress?: (progress: {
     recordedBytes: number;
@@ -50,11 +73,19 @@ export type RecordingUploadSnapshot = {
   isLive: boolean;
 };
 
+const defaultSchedule: Schedule = (callback, ms) => {
+  const handle = setTimeout(callback, ms);
+  return () => clearTimeout(handle);
+};
+
 export class RecordingUpload {
   private readonly options: RecordingUploadOptions;
   private readonly protocol: UploadProtocol;
   private readonly minChunkSize: number;
+  private readonly schedule: Schedule;
+  private readonly random: () => number;
 
+  private provider: UploadUrlProvider;
   private status: UploadStatus = INITIAL_UPLOAD_STATUS;
   private target: UploadTarget | null = null;
   private recordedBytes: number;
@@ -63,12 +94,28 @@ export class RecordingUpload {
   /** Guards the one-request-in-flight rule. */
   private pumping = false;
   private started = false;
+  /**
+   * Bumped whenever the running send loop must stop (pause, Retry Upload).
+   * A loop, request or provider call from an older epoch changes nothing.
+   */
+  private epoch = 0;
+  /** Ask the server for its Committed Offset before sending more (§5.1). */
+  private needsStatusQuery = false;
+  /** Consecutive retryable failures, for the backoff delay. */
+  private attempt = 0;
+  /** Ends a pending backoff wait early. */
+  private stopBackoff: (() => void) | null = null;
+  private online = true;
+  private connectivitySubscription: { remove(): void } | null = null;
   private readonly settledWaiters: Array<(status: UploadStatus) => void> = [];
 
   constructor(options: RecordingUploadOptions) {
     this.options = options;
+    this.provider = options.uploadUrlProvider;
     this.protocol = createResumableProtocol(options.transport);
     this.minChunkSize = options.minChunkSize ?? DEFAULT_MIN_CHUNK_SIZE;
+    this.schedule = options.schedule ?? defaultSchedule;
+    this.random = options.random ?? Math.random;
     this.isLive = options.finishedSize === undefined;
     this.recordedBytes = options.finishedSize ?? 0;
   }
@@ -77,22 +124,8 @@ export class RecordingUpload {
   start(): void {
     if (this.started) throw new Error('RecordingUpload already started');
     this.started = true;
-    const { recordingId, metadata, uploadUrlProvider } = this.options;
-    Promise.resolve()
-      .then(() => uploadUrlProvider({ recordingId, metadata }))
-      .then(
-        (target) => {
-          this.target = target;
-          this.dispatch({ type: 'uploadTargetReceived' });
-          this.pump();
-        },
-        (error: unknown) => {
-          this.dispatch({
-            type: 'uploadUrlProviderFailed',
-            message: errorMessage(error),
-          });
-        }
-      );
+    this.watchConnectivity();
+    this.requestTarget(this.provider);
   }
 
   /** The Recording File is now `recordedBytes` long. */
@@ -107,6 +140,25 @@ export class RecordingUpload {
     this.recordedBytes = finalSize;
     this.isLive = false;
     this.pump();
+  }
+
+  /**
+   * Retry Upload (spec §5.3): only for a `failed` upload, otherwise a no-op.
+   * Gets a fresh Upload Target from `uploadUrlProvider` (default: the
+   * original provider) and re-uploads from byte 0; the old URL's Committed
+   * Offset does not carry over.
+   */
+  retryUpload(uploadUrlProvider?: UploadUrlProvider): void {
+    if (this.status.state !== 'failed') return;
+    if (uploadUrlProvider) this.provider = uploadUrlProvider;
+    this.epoch++;
+    this.target = null;
+    this.needsStatusQuery = false;
+    this.attempt = 0;
+    this.setCommittedOffset(0);
+    this.dispatch({ type: 'retryRequested' });
+    this.watchConnectivity();
+    this.requestTarget(this.provider);
   }
 
   snapshot(): RecordingUploadSnapshot {
@@ -124,6 +176,29 @@ export class RecordingUpload {
     return new Promise((resolve) => this.settledWaiters.push(resolve));
   }
 
+  private requestTarget(provider: UploadUrlProvider): void {
+    const { recordingId, metadata } = this.options;
+    const epoch = this.epoch;
+    Promise.resolve()
+      .then(() => provider({ recordingId, metadata }))
+      .then(
+        (target) => {
+          if (epoch !== this.epoch) return;
+          this.target = target;
+          this.dispatch({ type: 'uploadTargetReceived' });
+          if (this.online) this.pump();
+          else this.pause('offline');
+        },
+        (error: unknown) => {
+          if (epoch !== this.epoch) return;
+          this.dispatch({
+            type: 'uploadUrlProviderFailed',
+            message: errorMessage(error),
+          });
+        }
+      );
+  }
+
   private dispatch(event: UploadEvent): void {
     const next = transition(this.status, event);
     if (next === this.status) return;
@@ -131,55 +206,217 @@ export class RecordingUpload {
     this.status = next;
     if (changed) this.options.onStateChange?.(next);
     if (isSettled(next)) {
+      this.connectivitySubscription?.remove();
+      this.connectivitySubscription = null;
       for (const resolve of this.settledWaiters.splice(0)) resolve(next);
+    }
+  }
+
+  private watchConnectivity(): void {
+    const { platform } = this.options;
+    if (!platform || this.connectivitySubscription) return;
+    let changed = false;
+    this.connectivitySubscription = platform.onConnectivityChange((state) => {
+      changed = true;
+      this.setOnline(state.isConnected);
+    });
+    platform.getConnectivity().then(
+      (state) => {
+        if (!changed) this.setOnline(state.isConnected);
+      },
+      () => {}
+    );
+  }
+
+  private setOnline(online: boolean): void {
+    this.online = online;
+    if (!online && isSending(this.status)) {
+      this.pause('offline');
+    } else if (
+      online &&
+      this.status.state === 'paused' &&
+      this.status.pauseReason === 'offline'
+    ) {
+      this.dispatch({ type: 'resumed' });
+      this.pump();
+    }
+  }
+
+  /** Stops sending: cancels the in-flight request and any backoff wait. */
+  private pause(reason: 'offline'): void {
+    this.epoch++;
+    this.dispatch({ type: 'paused', reason });
+    this.stopBackoff?.();
+    if (this.pumping) {
+      // A cancelled request may still have been committed.
+      this.needsStatusQuery = true;
+      if (this.target) this.options.transport.cancelChunk(this.target.url);
     }
   }
 
   /** Sends Chunks, one at a time, until there is nothing to send right now. */
   private pump(): void {
-    if (this.pumping || !this.target) return;
+    if (this.pumping || !this.target || !isSending(this.status)) return;
     this.pumping = true;
-    this.sendChunks(this.target)
+    const epoch = this.epoch;
+    this.sendChunks(this.target, epoch)
       .catch((error: unknown) => {
-        // Ticket 05 replaces this with retry / backoff (spec §5.4).
-        this.fail({ code: 'unknown', message: errorMessage(error) });
+        if (epoch === this.epoch) {
+          this.fail({ code: 'unknown', message: errorMessage(error) });
+        }
       })
       .finally(() => {
         this.pumping = false;
-        // Growth or a stop reported after the loop's last check.
-        if (isSending(this.status) && this.nextChunk()) this.pump();
+        // Growth, a stop or a resume reported after the loop's last check.
+        if (isSending(this.status) && this.hasWork()) this.pump();
       });
   }
 
-  private async sendChunks(target: UploadTarget): Promise<void> {
-    while (isSending(this.status)) {
+  private hasWork(): boolean {
+    return (
+      this.needsStatusQuery ||
+      this.nextChunk() !== null ||
+      this.isEmptyRecording()
+    );
+  }
+
+  /** Stopped with no bytes: there is no non-empty final Chunk to send (§5.2). */
+  private isEmptyRecording(): boolean {
+    return !this.isLive && this.recordedBytes === 0;
+  }
+
+  /** `fileMissing` if the Recording File is gone, else `unknown`. */
+  private async failEmptyRecording(): Promise<void> {
+    const { platform, filePath } = this.options;
+    if (platform) {
+      try {
+        await platform.getFileSize(filePath);
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === 'ENOENT') {
+          this.fail({ code: 'fileMissing', message: errorMessage(error) });
+          return;
+        }
+      }
+    }
+    this.fail({ code: 'unknown', message: 'Recording File is empty' });
+  }
+
+  private async sendChunks(target: UploadTarget, epoch: number): Promise<void> {
+    const { filePath } = this.options;
+    const stale = () => epoch !== this.epoch || !isSending(this.status);
+    while (!stale()) {
+      if (this.needsStatusQuery) {
+        const reply = await this.request(epoch, () =>
+          this.protocol.queryStatus(target, filePath)
+        );
+        if (!reply || stale()) continue;
+        if (reply.type === 'rejected') {
+          await this.handleRejected(reply.httpStatus, epoch);
+          continue;
+        }
+        this.needsStatusQuery = false;
+        if (reply.type === 'complete') return this.complete();
+        this.setCommittedOffset(reply.committedOffset);
+        continue;
+      }
+
       const chunk = this.nextChunk();
-      if (!chunk) return;
+      if (!chunk) {
+        if (this.isEmptyRecording()) await this.failEmptyRecording();
+        return;
+      }
       if (chunk.isFinal) this.dispatch({ type: 'finalChunkStarted' });
 
-      const reply = await this.protocol.sendChunk(
-        target,
-        this.options.filePath,
-        chunk
+      const reply = await this.request(epoch, () =>
+        this.protocol.sendChunk(target, filePath, chunk)
       );
+      if (!reply || stale()) continue;
       switch (reply.type) {
         case 'committed':
+          this.attempt = 0;
           this.setCommittedOffset(reply.committedOffset);
           break;
         case 'complete':
-          this.setCommittedOffset(this.recordedBytes);
-          this.dispatch({ type: 'uploadCompleted' });
-          return;
+          this.attempt = 0;
+          return this.complete();
         case 'rejected':
-          // Ticket 05 maps statuses to retry / urlRejected (spec §5.4).
-          this.fail({
-            code: 'unknown',
-            httpStatus: reply.httpStatus,
-            message: `Upload URL answered ${reply.httpStatus}`,
-          });
-          return;
+          await this.handleRejected(reply.httpStatus, epoch);
+          break;
       }
     }
+  }
+
+  /**
+   * Runs one request. A network failure backs off and returns `null`, after
+   * which the loop queries status and resends; so does a request cut short
+   * by a pause or Retry Upload. Other errors propagate.
+   */
+  private async request(
+    epoch: number,
+    send: () => Promise<ProtocolReply>
+  ): Promise<ProtocolReply | null> {
+    try {
+      return await send();
+    } catch (error) {
+      if (epoch !== this.epoch) return null;
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === 'ENETWORK' || code === 'ECANCELLED') {
+        await this.backOff(epoch);
+        return null;
+      }
+      if (code === 'ENOENT') {
+        this.fail({ code: 'fileMissing', message: errorMessage(error) });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /** `408`, `429`, `5xx` back off and retry; any other status fails (§5.4). */
+  private async handleRejected(httpStatus: number, epoch: number) {
+    if (isRetryableStatus(httpStatus)) {
+      await this.backOff(epoch);
+      return;
+    }
+    this.fail({
+      code: 'urlRejected',
+      httpStatus,
+      message: `Upload URL answered ${httpStatus}`,
+    });
+  }
+
+  /** Waits out the next backoff delay; the next request is a status query. */
+  private backOff(epoch: number): Promise<void> {
+    this.needsStatusQuery = true;
+    if (epoch !== this.epoch) return Promise.resolve();
+    const delay = backoffDelay(this.attempt++, this.random);
+    return new Promise((resolve) => {
+      const cancel = this.schedule(() => {
+        this.stopBackoff = null;
+        resolve();
+      }, delay);
+      this.stopBackoff = () => {
+        this.stopBackoff = null;
+        cancel();
+        resolve();
+      };
+    });
+  }
+
+  /** The server reported Upload Complete. */
+  private complete(): void {
+    if (this.isLive) {
+      this.fail({
+        code: 'unknown',
+        message: 'Upload URL reported Upload Complete while still recording',
+      });
+      return;
+    }
+    this.setCommittedOffset(this.recordedBytes);
+    if (this.status.state === 'uploading') {
+      this.dispatch({ type: 'finalChunkStarted' });
+    }
+    this.dispatch({ type: 'uploadCompleted' });
   }
 
   private nextChunk(): ChunkPlan | null {
@@ -210,6 +447,10 @@ function isSending(status: UploadStatus): boolean {
 
 function isSettled(status: UploadStatus): boolean {
   return status.state === 'completed' || status.state === 'failed';
+}
+
+function isRetryableStatus(httpStatus: number): boolean {
+  return httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
 }
 
 function errorMessage(error: unknown): string {
