@@ -121,7 +121,8 @@
     },
     "ios": {
       "modulesProvider": {
-        "RecordingUploads": "RecordingUploads"
+        "RecordingUploads": "RecordingUploads",
+        "CameraPermissions": "CameraPermissions"
       },
       "components": {
         "StreamingCamera": {
