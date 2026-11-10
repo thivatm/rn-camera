@@ -33,6 +33,9 @@ android {
 
 dependencies {
   implementation "com.facebook.react:react-android"
+  // Same OkHttp line React Native itself ships with.
+  implementation "com.squareup.okhttp3:okhttp:4.9.2"
 
   testImplementation "junit:junit:4.13.2"
+  testImplementation "com.squareup.okhttp3:mockwebserver:4.9.2"
 }
