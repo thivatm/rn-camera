@@ -37,7 +37,8 @@
     "prepare": "bob build",
     "typecheck": "tsc",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
-    "test": "jest"
+    "test": "jest",
+    "mock-server": "node mock-server/cli.mjs"
   },
   "keywords": [
     "react-native",
