@@ -1,2 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+  <!-- Don't hide the Host App from devices without a camera in Play. -->
+  <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 </manifest>

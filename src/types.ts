@@ -74,3 +74,11 @@ export type UploadError = {
   httpStatus?: number;
   message: string;
 };
+
+export type PermissionState =
+  'granted' | 'denied' | 'undetermined' | 'restricted';
+
+export type PermissionStatus = {
+  camera: PermissionState;
+  microphone: PermissionState;
+};
