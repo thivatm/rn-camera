@@ -21,6 +21,44 @@ class StreamingCameraViewManager :
   override fun createViewInstance(context: ThemedReactContext): StreamingCameraView =
     StreamingCameraView(context)
 
+  override fun setPosition(view: StreamingCameraView, value: String?) =
+    view.controller.setPosition(value)
+
+  override fun setTorch(view: StreamingCameraView, value: Boolean) =
+    view.controller.setTorch(value)
+
+  override fun setZoom(view: StreamingCameraView, value: Float) =
+    view.controller.setZoom(value)
+
+  override fun setEnablePinchToZoom(view: StreamingCameraView, value: Boolean) =
+    view.controller.setEnablePinchToZoom(value)
+
+  override fun setEnableTapToFocus(view: StreamingCameraView, value: Boolean) =
+    view.controller.setEnableTapToFocus(value)
+
+  override fun setVideoCodec(view: StreamingCameraView, value: String?) =
+    view.controller.setVideoCodec(value)
+
+  override fun setVideoResolution(view: StreamingCameraView, value: String?) =
+    view.controller.setVideoResolution(value)
+
+  override fun setVideoFps(view: StreamingCameraView, value: Int) =
+    view.controller.setVideoFps(value)
+
+  override fun setVideoBitrate(view: StreamingCameraView, value: Int) =
+    view.controller.setVideoBitrate(value)
+
+  override fun setAudio(view: StreamingCameraView, value: Boolean) =
+    view.controller.setAudio(value)
+
+  override fun onDropViewInstance(view: StreamingCameraView) {
+    view.controller.stop()
+    super.onDropViewInstance(view)
+  }
+
+  override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any> =
+    mapOf(StreamingCameraView.EVENT_NAME to mapOf("registrationName" to "onCameraError"))
+
   companion object {
     const val NAME = "StreamingCamera"
   }

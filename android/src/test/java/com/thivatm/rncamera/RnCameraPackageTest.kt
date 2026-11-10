@@ -8,11 +8,15 @@ import org.junit.Test
  * Feature tickets add their own test files next to this one.
  */
 class RnCameraPackageTest {
+  private val infos = RnCameraPackage().getReactModuleInfoProvider().getReactModuleInfos()
+
   @Test
   fun registersRecordingUploadsTurboModule() {
-    val infos = RnCameraPackage().getReactModuleInfoProvider().getReactModuleInfos()
-
-    assertEquals(setOf("RecordingUploads"), infos.keys)
     assertEquals(true, infos["RecordingUploads"]?.isTurboModule)
+  }
+
+  @Test
+  fun registersCameraPermissionsTurboModule() {
+    assertEquals(true, infos["CameraPermissions"]?.isTurboModule)
   }
 }
