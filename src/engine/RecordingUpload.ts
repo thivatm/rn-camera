@@ -94,6 +94,7 @@ export class RecordingUpload {
   /** Guards the one-request-in-flight rule. */
   private pumping = false;
   private started = false;
+  private cancelled = false;
   /**
    * Bumped whenever the running send loop must stop (pause, Retry Upload).
    * A loop, request or provider call from an older epoch changes nothing.
@@ -130,6 +131,7 @@ export class RecordingUpload {
 
   /** The Recording File is now `recordedBytes` long. */
   fileGrew(recordedBytes: number): void {
+    if (this.cancelled) return;
     if (!this.isLive) throw new Error('fileGrew after recordingStopped');
     this.recordedBytes = Math.max(this.recordedBytes, recordedBytes);
     this.pump();
@@ -137,6 +139,7 @@ export class RecordingUpload {
 
   /** The Recording stopped; the Recording File is `finalSize` long and will not grow. */
   recordingStopped(finalSize: number): void {
+    if (this.cancelled) return;
     this.recordedBytes = finalSize;
     this.isLive = false;
     this.pump();
@@ -149,7 +152,7 @@ export class RecordingUpload {
    * Offset does not carry over.
    */
   retryUpload(uploadUrlProvider?: UploadUrlProvider): void {
-    if (this.status.state !== 'failed') return;
+    if (this.cancelled || this.status.state !== 'failed') return;
     if (uploadUrlProvider) this.provider = uploadUrlProvider;
     this.epoch++;
     this.target = null;
@@ -159,6 +162,23 @@ export class RecordingUpload {
     this.dispatch({ type: 'retryRequested' });
     this.watchConnectivity();
     this.requestTarget(this.provider);
+  }
+
+  /**
+   * Stops the upload for good (e.g. the Recording was deleted): cancels the
+   * in-flight request, any backoff wait and the provider call. No callback
+   * fires afterwards and every later call is a no-op.
+   */
+  cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    this.epoch++;
+    this.stopBackoff?.();
+    if (this.pumping && this.target) {
+      this.options.transport.cancelChunk(this.target.url);
+    }
+    this.connectivitySubscription?.remove();
+    this.connectivitySubscription = null;
   }
 
   snapshot(): RecordingUploadSnapshot {
@@ -200,6 +220,7 @@ export class RecordingUpload {
   }
 
   private dispatch(event: UploadEvent): void {
+    if (this.cancelled) return;
     const next = transition(this.status, event);
     if (next === this.status) return;
     const changed = next.state !== this.status.state;
@@ -229,6 +250,7 @@ export class RecordingUpload {
   }
 
   private setOnline(online: boolean): void {
+    if (this.cancelled) return;
     this.online = online;
     if (!online && isSending(this.status)) {
       this.pause('offline');
@@ -256,7 +278,8 @@ export class RecordingUpload {
 
   /** Sends Chunks, one at a time, until there is nothing to send right now. */
   private pump(): void {
-    if (this.pumping || !this.target || !isSending(this.status)) return;
+    if (this.cancelled || this.pumping || !this.target) return;
+    if (!isSending(this.status)) return;
     this.pumping = true;
     const epoch = this.epoch;
     this.sendChunks(this.target, epoch)
@@ -429,6 +452,7 @@ export class RecordingUpload {
   }
 
   private setCommittedOffset(committedOffset: number): void {
+    if (this.cancelled) return;
     this.committedOffset = committedOffset;
     this.options.onProgress?.({
       recordedBytes: this.recordedBytes,
