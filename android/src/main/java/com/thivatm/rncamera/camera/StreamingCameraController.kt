@@ -4,28 +4,18 @@ import com.thivatm.rncamera.permissions.CameraPermissions
 
 enum class CameraPosition { FRONT, BACK }
 
-/** The `video` prop (spec §3.2). Stored for recording. */
+/**
+ * The `video*` props (spec §3.2 `video`, flattened). Stored for recording.
+ * `fps` and `bitrate` of 0 leave the choice to the encoder.
+ */
 data class VideoSettings(
   val codec: String = "h264",
   val resolution: String = "1080p",
-  val fps: Int = 30,
-  val bitrate: Int = 5_000_000,
-) {
-  companion object {
-    fun fromJs(map: Map<String, Any?>?): VideoSettings {
-      val defaults = VideoSettings()
-      if (map == null) return defaults
-      return VideoSettings(
-        codec = map["codec"] as? String ?: defaults.codec,
-        resolution = map["resolution"] as? String ?: defaults.resolution,
-        fps = (map["fps"] as? Number)?.toInt() ?: defaults.fps,
-        bitrate = (map["bitrate"] as? Number)?.toInt() ?: defaults.bitrate,
-      )
-    }
-  }
-}
+  val fps: Int = 0,
+  val bitrate: Int = 0,
+)
 
-/** Payload of the `onError` event. */
+/** Payload of the `onCameraError` event. */
 data class CameraError(val code: String, val message: String)
 
 /** The device camera and its preview. CameraX lives behind this seam. */
@@ -102,8 +92,20 @@ class StreamingCameraController(
   var video = VideoSettings()
     private set
 
-  fun setVideo(value: Map<String, Any?>?) {
-    video = VideoSettings.fromJs(value)
+  fun setVideoCodec(value: String?) {
+    video = video.copy(codec = value ?: VideoSettings().codec)
+  }
+
+  fun setVideoResolution(value: String?) {
+    video = video.copy(resolution = value ?: VideoSettings().resolution)
+  }
+
+  fun setVideoFps(value: Int) {
+    video = video.copy(fps = value)
+  }
+
+  fun setVideoBitrate(value: Int) {
+    video = video.copy(bitrate = value)
   }
 
   /** Stored for recording; also decides whether the microphone permission is required. */
@@ -118,7 +120,7 @@ class StreamingCameraController(
   fun start() {
     if (isOpen) return
     missingPermission()?.let {
-      onError(CameraError("permissionDenied", "$it permission has not been granted"))
+      onError(CameraError("permissionMissing", "$it permission has not been granted"))
       return
     }
     open()

@@ -75,10 +75,33 @@ export type UploadError = {
   message: string;
 };
 
+// ---- §3.4 Permissions. `PermissionStatus` is not spelled out in the spec;
+// this shape is shared by the iOS and Android implementations.
+
 export type PermissionState =
   'granted' | 'denied' | 'undetermined' | 'restricted';
 
 export type PermissionStatus = {
   camera: PermissionState;
   microphone: PermissionState;
+};
+
+// ---- §3.2 `<StreamingCamera>`
+
+export type CameraPosition = 'front' | 'back';
+
+export type VideoOptions = {
+  /** Default `'h264'`. */
+  codec?: 'h264' | 'hevc';
+  /** Default `'1080p'`. */
+  resolution?: '720p' | '1080p';
+  fps?: number;
+  /** Bits per second. */
+  bitrate?: number;
+};
+
+/** Passed to `onError`. Without the required permissions nothing renders. */
+export type CameraError = {
+  code: 'permissionMissing' | 'cameraUnavailable' | 'unknown';
+  message: string;
 };

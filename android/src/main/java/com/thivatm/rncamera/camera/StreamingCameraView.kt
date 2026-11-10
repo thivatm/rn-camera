@@ -16,7 +16,7 @@ import com.facebook.react.uimanager.events.Event
 /**
  * Native view behind the `StreamingCamera` Fabric component. Shows the preview
  * only while it is on screen and the app is in the foreground; without
- * permission it stays empty and dispatches `onError`.
+ * permission it stays empty and dispatches `onCameraError`.
  */
 @SuppressLint("ViewConstructor")
 class StreamingCameraView(private val reactContext: ThemedReactContext) :
@@ -106,6 +106,6 @@ class StreamingCameraView(private val reactContext: ThemedReactContext) :
   }
 
   companion object {
-    const val EVENT_NAME = "topError"
+    const val EVENT_NAME = "topCameraError"
   }
 }

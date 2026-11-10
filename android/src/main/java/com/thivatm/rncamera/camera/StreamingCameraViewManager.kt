@@ -1,6 +1,5 @@
 package com.thivatm.rncamera.camera
 
-import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
@@ -37,8 +36,17 @@ class StreamingCameraViewManager :
   override fun setEnableTapToFocus(view: StreamingCameraView, value: Boolean) =
     view.controller.setEnableTapToFocus(value)
 
-  override fun setVideo(view: StreamingCameraView, value: ReadableMap?) =
-    view.controller.setVideo(value?.toHashMap())
+  override fun setVideoCodec(view: StreamingCameraView, value: String?) =
+    view.controller.setVideoCodec(value)
+
+  override fun setVideoResolution(view: StreamingCameraView, value: String?) =
+    view.controller.setVideoResolution(value)
+
+  override fun setVideoFps(view: StreamingCameraView, value: Int) =
+    view.controller.setVideoFps(value)
+
+  override fun setVideoBitrate(view: StreamingCameraView, value: Int) =
+    view.controller.setVideoBitrate(value)
 
   override fun setAudio(view: StreamingCameraView, value: Boolean) =
     view.controller.setAudio(value)
@@ -49,7 +57,7 @@ class StreamingCameraViewManager :
   }
 
   override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any> =
-    mapOf(StreamingCameraView.EVENT_NAME to mapOf("registrationName" to "onError"))
+    mapOf(StreamingCameraView.EVENT_NAME to mapOf("registrationName" to "onCameraError"))
 
   companion object {
     const val NAME = "StreamingCamera"

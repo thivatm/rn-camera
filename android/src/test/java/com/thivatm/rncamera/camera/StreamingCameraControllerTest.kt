@@ -18,7 +18,7 @@ class StreamingCameraControllerTest {
     controller.start()
 
     assertEquals(null, session.openedAt)
-    assertEquals(listOf("permissionDenied"), errors.map { it.code })
+    assertEquals(listOf("permissionMissing"), errors.map { it.code })
   }
 
   @Test
@@ -52,7 +52,7 @@ class StreamingCameraControllerTest {
     controller.start()
 
     assertEquals(null, session.openedAt)
-    assertEquals(listOf("permissionDenied"), errors.map { it.code })
+    assertEquals(listOf("permissionMissing"), errors.map { it.code })
   }
 
   @Test
@@ -145,16 +145,19 @@ class StreamingCameraControllerTest {
   }
 
   @Test
-  fun videoSettingsDefaultToTheSpec() {
-    controller.setVideo(null)
+  fun videoSettingsDefaultToTheSpecWithFpsAndBitrateLeftToTheEncoder() {
+    controller.setVideoCodec(null)
+    controller.setVideoResolution(null)
 
-    assertEquals(VideoSettings(codec = "h264", resolution = "1080p", fps = 30, bitrate = 5_000_000), controller.video)
+    assertEquals(VideoSettings(codec = "h264", resolution = "1080p", fps = 0, bitrate = 0), controller.video)
   }
 
   @Test
   fun videoSettingsAreStoredForRecording() {
-    // JS numbers arrive as doubles.
-    controller.setVideo(mapOf("codec" to "hevc", "resolution" to "720p", "fps" to 60.0, "bitrate" to 2_000_000.0))
+    controller.setVideoCodec("hevc")
+    controller.setVideoResolution("720p")
+    controller.setVideoFps(60)
+    controller.setVideoBitrate(2_000_000)
 
     assertEquals(VideoSettings(codec = "hevc", resolution = "720p", fps = 60, bitrate = 2_000_000), controller.video)
   }

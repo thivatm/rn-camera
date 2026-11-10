@@ -3,7 +3,6 @@ package com.thivatm.rncamera.permissions
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.UiThreadUtil
 import com.thivatm.rncamera.NativeCameraPermissionsSpec
 
@@ -17,8 +16,7 @@ class CameraPermissionsModule(reactContext: ReactApplicationContext) :
     promise.resolve(permissions.status().toWritableMap())
   }
 
-  override fun requestPermissions(options: ReadableMap, promise: Promise) {
-    val audio = options.hasKey("audio") && options.getBoolean("audio")
+  override fun requestPermissions(audio: Boolean, promise: Promise) {
     UiThreadUtil.runOnUiThread {
       try {
         permissions.request(audio) { promise.resolve(it.toWritableMap()) }
