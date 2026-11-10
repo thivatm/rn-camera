@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": []
   },
-  "exclude": ["example", "lib", "**/__tests__", "**/__fixtures__", "**/__mocks__"]
+  "exclude": ["example", "lib", "mock-server", "**/__tests__", "**/__fixtures__", "**/__mocks__"]
 }
