@@ -1,15 +1,44 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+  type Ref,
+} from 'react';
 import { AppState, type ViewProps } from 'react-native';
 import { getPermissionStatus } from './permissions';
+import { getLiveRecordings, type RecordingStoppedInfo } from './recording';
+import type { CameraHandle } from './recording/LiveRecordings';
 import NativeStreamingCamera, {
+  Commands,
   type NativeCameraErrorEvent,
 } from './specs/StreamingCameraNativeComponent';
 import type {
   CameraError,
   CameraPosition,
   PermissionStatus,
+  RecordingId,
+  StartRecordingOptions,
   VideoOptions,
 } from './types';
+
+/** `ref` of `<StreamingCamera>` (spec §3.2). */
+export type StreamingCameraRef = {
+  /**
+   * Starts a Live Recording and its upload. Calls `uploadUrlProvider` right
+   * away but does not wait for it. Rejects with a `RecordingError` while a
+   * Live Recording exists (`recordingInProgress`), when the camera is not
+   * showing (`cameraNotReady`), or when capture fails to start
+   * (`recordingFailed`).
+   */
+  startRecording(
+    options: StartRecordingOptions
+  ): Promise<{ recordingId: RecordingId }>;
+  /** Stops this camera's Live Recording with `reason: 'user'`; resolves once it is Finished. */
+  stopRecording(): Promise<void>;
+};
 
 export type StreamingCameraProps = ViewProps & {
   /** Default `'back'`. Ignored while recording. */
@@ -25,6 +54,9 @@ export type StreamingCameraProps = ViewProps & {
   audio?: boolean;
   /** Permission missing, camera unavailable, … */
   onError?: (error: CameraError) => void;
+  /** A Live Recording became a Finished Recording, for any `StopReason`. */
+  onRecordingStopped?: (info: RecordingStoppedInfo) => void;
+  ref?: Ref<StreamingCameraRef>;
 };
 
 function missingPermissions(
@@ -45,11 +77,41 @@ export function StreamingCamera({
   video,
   audio = true,
   onError,
+  onRecordingStopped,
+  ref,
   ...rest
 }: StreamingCameraProps) {
   const [allowed, setAllowed] = useState(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onRecordingStoppedRef = useRef(onRecordingStopped);
+  onRecordingStoppedRef.current = onRecordingStopped;
+  const nativeRef = useRef<ComponentRef<typeof NativeStreamingCamera>>(null);
+
+  const camera = useMemo<CameraHandle>(
+    () => ({
+      start: (recordingId) => {
+        if (!nativeRef.current) return false;
+        Commands.startRecording(nativeRef.current, recordingId);
+        return true;
+      },
+      stop: (reason) => {
+        if (nativeRef.current)
+          Commands.stopRecording(nativeRef.current, reason);
+      },
+      onStopped: (info) => onRecordingStoppedRef.current?.(info),
+    }),
+    []
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      startRecording: (options) => getLiveRecordings().start(camera, options),
+      stopRecording: () => getLiveRecordings().stop(camera),
+    }),
+    [camera]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +149,7 @@ export function StreamingCamera({
   return (
     <NativeStreamingCamera
       {...rest}
+      ref={nativeRef}
       audio={audio}
       videoCodec={video?.codec}
       videoResolution={video?.resolution}

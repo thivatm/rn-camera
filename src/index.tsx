@@ -1,5 +1,14 @@
 export { getPermissionStatus, requestPermissions } from './permissions';
-export { StreamingCamera, type StreamingCameraProps } from './StreamingCamera';
+export {
+  StreamingCamera,
+  type StreamingCameraProps,
+  type StreamingCameraRef,
+} from './StreamingCamera';
+export {
+  RecordingError,
+  type RecordingErrorCode,
+  type RecordingStoppedInfo,
+} from './recording';
 export { RecordingUploads } from './uploads';
 export type {
   RecordingUploadsEventName,

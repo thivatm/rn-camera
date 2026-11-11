@@ -8,6 +8,9 @@
 
 using namespace facebook::react;
 
+@interface StreamingCameraView () <RCTStreamingCameraViewProtocol>
+@end
+
 @implementation StreamingCameraView {
   StreamingCameraHostView *_hostView;
 }
@@ -49,6 +52,21 @@ using namespace facebook::react;
   _hostView.audio = newProps.audio;
 
   [super updateProps:props oldProps:oldProps];
+}
+
+- (void)handleCommand:(const NSString *)commandName args:(const NSArray *)args
+{
+  RCTStreamingCameraHandleCommand(self, commandName, args);
+}
+
+- (void)startRecording:(NSString *)recordingId
+{
+  [_hostView startRecording:recordingId];
+}
+
+- (void)stopRecording:(NSString *)reason
+{
+  [_hostView stopRecording:reason];
 }
 
 - (void)emitCameraErrorWithCode:(NSString *)code message:(NSString *)message

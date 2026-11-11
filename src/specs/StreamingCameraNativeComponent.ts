@@ -1,6 +1,9 @@
+import type * as React from 'react';
 import {
+  codegenNativeCommands,
   codegenNativeComponent,
   type CodegenTypes,
+  type HostComponent,
   type ViewProps,
 } from 'react-native';
 
@@ -31,5 +34,35 @@ export interface NativeProps extends ViewProps {
   audio?: CodegenTypes.WithDefault<boolean, true>;
   onCameraError?: CodegenTypes.DirectEventHandler<NativeCameraErrorEvent>;
 }
+
+type ComponentType = HostComponent<NativeProps>;
+
+/**
+ * Recording commands. Results arrive as `StreamingCameraRecorder` module
+ * events, keyed by `recordingId`.
+ */
+interface NativeCommands {
+  /**
+   * Starts recording to `<Application Support>/rn-camera/recordings/<recordingId>.mp4`
+   * with the current `video*` / `audio` props, then emits `onRecordingStarted`
+   * (or `onRecordingFailed`).
+   */
+  startRecording: (
+    viewRef: React.ElementRef<ComponentType>,
+    recordingId: string
+  ) => void;
+  /**
+   * Finishes the Live Recording, then emits `onRecordingStopped` with
+   * `reason` (a `StopReason`). Ignored when not recording.
+   */
+  stopRecording: (
+    viewRef: React.ElementRef<ComponentType>,
+    reason: string
+  ) => void;
+}
+
+export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
+  supportedCommands: ['startRecording', 'stopRecording'],
+});
 
 export default codegenNativeComponent<NativeProps>('StreamingCamera');
