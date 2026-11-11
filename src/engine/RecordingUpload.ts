@@ -430,17 +430,32 @@ export class RecordingUpload {
     return (
       this.needsStatusQuery ||
       this.nextChunk() !== null ||
-      this.isEmptyRecording()
+      this.hasNoFinalChunk()
     );
   }
 
-  /** Stopped with no bytes: there is no non-empty final Chunk to send (§5.2). */
-  private isEmptyRecording(): boolean {
-    return !this.isLive && this.recordedBytes === 0;
+  /**
+   * Stopped, and there is no non-empty final Chunk to send (§5.2): the
+   * Recording File is empty, or the server holds more than it.
+   */
+  private hasNoFinalChunk(): boolean {
+    return !this.isLive && this.committedOffset >= this.recordedBytes;
+  }
+
+  /** Ends a stopped upload that has no final Chunk to send in `failed`. */
+  private async failWithoutFinalChunk(): Promise<void> {
+    if (this.recordedBytes === 0)
+      return this.failUnreadable('Recording File is empty');
+    this.fail({
+      code: 'unknown',
+      message:
+        `The Upload URL's Committed Offset (${this.committedOffset}) is ` +
+        `beyond the end of the Recording File (${this.recordedBytes} bytes)`,
+    });
   }
 
   /** `fileMissing` if the Recording File is gone, else `unknown`. */
-  private async failEmptyRecording(): Promise<void> {
+  private async failUnreadable(message: string): Promise<void> {
     const { platform, filePath } = this.options;
     if (platform) {
       try {
@@ -452,7 +467,7 @@ export class RecordingUpload {
         }
       }
     }
-    this.fail({ code: 'unknown', message: 'Recording File is empty' });
+    this.fail({ code: 'unknown', message });
   }
 
   private async sendChunks(target: UploadTarget, epoch: number): Promise<void> {
@@ -476,7 +491,7 @@ export class RecordingUpload {
 
       const chunk = this.nextChunk();
       if (!chunk) {
-        if (this.isEmptyRecording()) await this.failEmptyRecording();
+        if (this.hasNoFinalChunk()) await this.failWithoutFinalChunk();
         return;
       }
       if (chunk.isFinal) this.dispatch({ type: 'finalChunkStarted' });
@@ -574,12 +589,20 @@ export class RecordingUpload {
   }
 
   private nextChunk(): ChunkPlan | null {
-    return planNextChunk({
-      committedOffset: this.committedOffset,
-      recordedBytes: this.recordedBytes,
-      isLive: this.isLive,
+    const { committedOffset, recordedBytes, isLive } = this;
+    const plan = planNextChunk({
+      committedOffset,
+      recordedBytes,
+      isLive,
       minChunkSize: this.minChunkSize,
     });
+    if (plan || isLive || recordedBytes === 0) return plan;
+    if (committedOffset !== recordedBytes) return null;
+    // The server holds every byte but has not seen the final Chunk (e.g. an
+    // Interrupted Recording cut back to what was already committed). Resend
+    // the last byte as the final Chunk: bytes below the Committed Offset are
+    // ignored if resent (§5.1).
+    return { start: recordedBytes - 1, end: recordedBytes, isFinal: true };
   }
 
   private setCommittedOffset(committedOffset: number): void {

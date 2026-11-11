@@ -141,6 +141,135 @@ describe('relaunch after the app was killed mid-capture', () => {
   });
 });
 
+describe('an Interrupted Recording whose server holds as much as the repaired file, or more', () => {
+  const CHUNK = 256 * 1024;
+  /**
+   * Two complete Fragments, then a third whose `moof` was cut short: its
+   * header claims more bytes than were written. `length` bytes in all.
+   */
+  function killedMidFragment(length: number) {
+    const buf = Buffer.alloc(length);
+    fs.readFileSync(FIXTURE).copy(buf, 0, 0, SECOND_FRAGMENT_END);
+    buf.writeUInt32BE(0x7fffffff, SECOND_FRAGMENT_END);
+    buf.write('moof', SECOND_FRAGMENT_END + 4, 'latin1');
+    return buf;
+  }
+
+  /** Records `content` live until the server committed `committed` bytes. */
+  async function recordUntilCommitted(
+    content: Buffer,
+    committed: number,
+    persistBeforeCommit: boolean
+  ) {
+    const { id, url } = server.createUpload();
+    const filePath = path.join(dir, 'rec.mp4');
+    fs.writeFileSync(filePath, content);
+    const first = launch();
+    first.uploads.registerLiveRecording({
+      recordingId: 'rec-1',
+      filePath,
+      options: { uploadUrlProvider: provider({ url }), minChunkSize: CHUNK },
+    });
+    await settleWrites();
+    const early = new Map(first.kv);
+    first.uploads.reportFileGrowth('rec-1', content.length);
+    await until(() => server.getUpload(id).committedOffset === committed);
+    await settleWrites();
+    const persisted = first.kill();
+    return { id, filePath, persisted: persistBeforeCommit ? early : persisted };
+  }
+
+  test('server Committed Offset == repaired size: the upload completes by resending the last byte as the final Chunk', async () => {
+    const content = killedMidFragment(2 * CHUNK + 1000);
+    const { id, filePath, persisted } = await recordUntilCommitted(
+      content,
+      2 * CHUNK,
+      false
+    );
+
+    const second = launch(persisted);
+    expect(await second.uploads.getRecordings()).toEqual([
+      expect.objectContaining({
+        interrupted: true,
+        recordedBytes: 2 * CHUNK,
+        committedOffset: 2 * CHUNK,
+      }),
+    ]);
+    expect(fs.statSync(filePath).size).toBe(2 * CHUNK);
+
+    await second.uploads.resumeUploads({ uploadUrlProvider: failingProvider });
+    await until(() => server.getUpload(id).complete);
+
+    const upload = server.getUpload(id);
+    expect(upload.total).toBe(2 * CHUNK);
+    expect(upload.bytes.equals(content.subarray(0, 2 * CHUNK))).toBe(true);
+    expect(upload.requests.at(-1)!.contentRange).toBe(
+      `bytes ${2 * CHUNK - 1}-${2 * CHUNK - 1}/${2 * CHUNK}`
+    );
+    await until(
+      () =>
+        JSON.parse(second.kv.get('rnCamera.uploads.recording.rec-1') ?? '{}')
+          .status?.state === 'completed'
+    );
+  });
+
+  test('server Committed Offset > repaired size: the upload fails with `unknown`', async () => {
+    const content = killedMidFragment(2 * CHUNK + 1000);
+    // The app was killed before it persisted the server's Committed Offset,
+    // so the repair cuts the file below what the server holds.
+    const { id, filePath, persisted } = await recordUntilCommitted(
+      content,
+      2 * CHUNK,
+      true
+    );
+
+    const second = launch(persisted);
+    await second.uploads.getRecordings();
+    expect(fs.statSync(filePath).size).toBe(SECOND_FRAGMENT_END);
+    const errors: unknown[] = [];
+    second.uploads.addListener('uploadError', (e) => errors.push(e.error));
+
+    await second.uploads.resumeUploads({ uploadUrlProvider: failingProvider });
+    await until(() => errors.length === 1);
+
+    expect(errors[0]).toEqual({
+      code: 'unknown',
+      message: expect.stringMatching(/Committed Offset .* beyond/),
+    });
+    expect(server.getUpload(id).complete).toBe(false);
+    expect(await second.uploads.getRecordings()).toEqual([
+      expect.objectContaining({ uploadState: 'failed' }),
+    ]);
+  });
+
+  test('the Committed Offset is persisted after every server-confirmed Chunk', async () => {
+    const content = killedMidFragment(3 * CHUNK + 1000);
+    const { id, url } = server.createUpload();
+    const filePath = path.join(dir, 'rec.mp4');
+    fs.writeFileSync(filePath, content);
+    const first = launch();
+    const offsets = new Set<number>();
+    const kvSet = first.kv.set.bind(first.kv);
+    first.kv.set = (key, value) => {
+      if (key === 'rnCamera.uploads.recording.rec-1') {
+        offsets.add(JSON.parse(value).committedOffset);
+      }
+      return kvSet(key, value);
+    };
+    first.uploads.registerLiveRecording({
+      recordingId: 'rec-1',
+      filePath,
+      options: { uploadUrlProvider: provider({ url }), minChunkSize: CHUNK },
+    });
+    for (const size of [CHUNK + 1, 2 * CHUNK + 1, 3 * CHUNK + 1]) {
+      first.uploads.reportFileGrowth('rec-1', size);
+      await until(() => server.getUpload(id).committedOffset === size - 1);
+    }
+    await settleWrites();
+    expect([...offsets]).toEqual([0, CHUNK, 2 * CHUNK, 3 * CHUNK]);
+  });
+});
+
 describe('state survives a relaunch', () => {
   test('a stopped Recording resumes from the server Committed Offset, with the stored headers', async () => {
     // Slow enough that each 8 MiB Chunk takes about 200 ms.
