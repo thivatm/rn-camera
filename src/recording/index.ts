@@ -1,4 +1,4 @@
-import { getRecordingUploadsManager } from '../uploads';
+import { getNativePlatform, getRecordingUploadsManager } from '../uploads';
 import { LiveRecordings } from './LiveRecordings';
 
 let liveRecordings: LiveRecordings | null = null;
@@ -10,8 +10,7 @@ export function getLiveRecordings(): LiveRecordings {
     liveRecordings = new LiveRecordings({
       events: () => require('../specs/NativeStreamingCameraRecorder').default,
       uploads: getRecordingUploadsManager,
-      freeDiskSpace: () =>
-        require('../specs/NativeRecordingUploads').default.getFreeDiskSpace(),
+      freeDiskSpace: () => getNativePlatform().getFreeDiskSpace(),
     });
   }
   return liveRecordings;

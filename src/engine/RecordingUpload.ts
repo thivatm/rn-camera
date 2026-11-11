@@ -97,7 +97,8 @@ export type RecordingUploadSnapshot = {
   target: UploadTarget | null;
 };
 
-const defaultSchedule: Schedule = (callback, ms) => {
+/** `setTimeout`-based [Schedule]. */
+export const defaultSchedule: Schedule = (callback, ms) => {
   const handle = setTimeout(callback, ms);
   return () => clearTimeout(handle);
 };
@@ -134,8 +135,8 @@ export class RecordingUpload {
   private networkType: NetworkType | null = null;
   /** Connectivity was reported at least once (always, without a platform). */
   private connectivityKnown: boolean;
-  /** A pause imposed by the scheduler (spec §5.5), see `setHold`. */
-  private hold: SchedulerPauseReason | null = null;
+  /** A pause imposed by the scheduler (spec §5.5), see `setSchedulerPause`. */
+  private schedulerPause: SchedulerPauseReason | null = null;
   /**
    * The upload was paused (or is a Retry Upload of a Finished Recording):
    * restarting it is subject to Allow Cellular.
@@ -200,9 +201,9 @@ export class RecordingUpload {
    * starting; `null` lets it (re)start. A restored upload still waits for
    * `resume`.
    */
-  setHold(reason: SchedulerPauseReason | null): void {
-    if (this.cancelled || this.hold === reason) return;
-    this.hold = reason;
+  setSchedulerPause(reason: SchedulerPauseReason | null): void {
+    if (this.cancelled || this.schedulerPause === reason) return;
+    this.schedulerPause = reason;
     this.reevaluate();
   }
 
@@ -343,14 +344,14 @@ export class RecordingUpload {
 
   /**
    * Applies the pause rules (spec §5.5) to the current status. A running
-   * upload pauses when held or offline, but never for Wi-Fi; one that is
+   * upload pauses when the scheduler pauses it or it goes offline, but never for Wi-Fi; one that is
    * about to (re)start also waits for Wi-Fi when it may not use cellular.
    */
   private reevaluate(): void {
     if (this.cancelled) return;
     const { status } = this;
     if (isSending(status)) {
-      const reason = this.hold ?? (this.online ? null : 'offline');
+      const reason = this.schedulerPause ?? (this.online ? null : 'offline');
       if (reason) this.pause(reason);
       return;
     }
@@ -382,7 +383,7 @@ export class RecordingUpload {
 
   /** Why an upload that is not running may not start now, if anything. */
   private startBlocker(): PauseReason | null {
-    if (this.hold) return this.hold;
+    if (this.schedulerPause) return this.schedulerPause;
     if (!this.online) return 'offline';
     const allowCellular = this.options.allowCellular ?? true;
     if (

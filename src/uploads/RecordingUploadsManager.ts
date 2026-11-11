@@ -3,6 +3,7 @@
 // through the injected Transport / Platform seam, and time through the
 // injected clock, so Jest can drive it against the Node fixtures.
 import {
+  defaultSchedule,
   RecordingUpload,
   type RecordingUploadOptions,
   type Schedule,
@@ -99,6 +100,9 @@ type Entry = {
   persistQueued: boolean;
 };
 
+/** What an entry is made from; the rest `createEntry` adds. */
+type EntryFields = Omit<Entry, 'engine' | 'progress' | 'persistQueued'>;
+
 /** Key/value keys (spec §6). The index lists every persisted Recording id. */
 const INDEX_KEY = 'rnCamera.uploads.index';
 const recordingKey = (id: RecordingId) => `rnCamera.uploads.recording.${id}`;
@@ -131,11 +135,6 @@ const noProvider: UploadUrlProvider = async () => {
   throw new Error(
     'No Upload URL Provider: call RecordingUploads.resumeUploads'
   );
-};
-
-const defaultSchedule: Schedule = (callback, ms) => {
-  const handle = setTimeout(callback, ms);
-  return () => clearTimeout(handle);
 };
 
 export class RecordingUploadsManager {
@@ -269,29 +268,19 @@ export class RecordingUploadsManager {
     if (this.entries.has(recordingId)) {
       throw new Error(`Recording ${recordingId} is already registered`);
     }
-    const entry: Entry = {
-      id: recordingId,
-      metadata: options.metadata,
-      filePath,
-      keepRecordingFile: options.keepRecordingFile ?? true,
-      allowCellular: options.allowCellular ?? true,
-      minChunkSize: options.minChunkSize,
-      createdAt: new Date(this.now()).toISOString(),
-      interrupted: false,
-      persistQueued: false,
-      // Assigned below: the engine's callbacks need the entry.
-      engine: undefined as unknown as RecordingUpload,
-      progress: undefined as unknown as ProgressThrottle,
-    };
-    entry.progress = new ProgressThrottle(this.now, this.schedule, () =>
-      this.emitProgress(entry)
+    const entry = this.createEntry(
+      {
+        id: recordingId,
+        metadata: options.metadata,
+        filePath,
+        keepRecordingFile: options.keepRecordingFile ?? true,
+        allowCellular: options.allowCellular ?? true,
+        minChunkSize: options.minChunkSize,
+        createdAt: new Date(this.now()).toISOString(),
+        interrupted: false,
+      },
+      { uploadUrlProvider: options.uploadUrlProvider }
     );
-    entry.engine = this.createEngine(entry, {
-      filePath,
-      uploadUrlProvider: options.uploadUrlProvider,
-      minChunkSize: options.minChunkSize,
-      allowCellular: entry.allowCellular,
-    });
     this.entries.set(recordingId, entry);
     this.persist(entry);
     this.persistIndex();
@@ -355,12 +344,12 @@ export class RecordingUploadsManager {
         const live = this.liveRecordingId();
         const head = live === null ? this.queue[0] : undefined;
         for (const entry of [...this.entries.values()]) {
-          let hold: SchedulerPauseReason | null = null;
-          if (this.backgrounded) hold = 'backgrounded';
+          let pause: SchedulerPauseReason | null = null;
+          if (this.backgrounded) pause = 'backgrounded';
           else if (entry.id !== live && entry.id !== head) {
-            hold = 'deprioritized';
+            pause = 'deprioritized';
           }
-          entry.engine.setHold(hold);
+          entry.engine.setSchedulerPause(pause);
         }
       } while (this.rescheduleAgain);
     } finally {
@@ -424,36 +413,28 @@ export class RecordingUploadsManager {
     if (status.state !== 'completed' && status.state !== 'failed') {
       status = { state: 'paused', pauseReason: 'awaitingResume' };
     }
-    const entry: Entry = {
-      id: record.id,
-      metadata: record.metadata,
-      filePath: record.filePath,
-      keepRecordingFile: record.keepRecordingFile,
-      allowCellular: record.allowCellular,
-      minChunkSize: record.minChunkSize,
-      createdAt: record.createdAt,
-      stopReason: record.stopReason,
-      interrupted,
-      persistQueued: false,
-      engine: undefined as unknown as RecordingUpload,
-      progress: undefined as unknown as ProgressThrottle,
-    };
-    entry.progress = new ProgressThrottle(this.now, this.schedule, () =>
-      this.emitProgress(entry)
-    );
-    entry.engine = this.createEngine(entry, {
-      filePath: record.filePath ?? '',
-      uploadUrlProvider: noProvider,
-      minChunkSize: record.minChunkSize,
-      allowCellular: record.allowCellular,
-      finishedSize: recordedBytes,
-      restored: {
-        status,
-        target: record.target,
-        committedOffset: record.committedOffset,
+    return this.createEntry(
+      {
+        id: record.id,
+        metadata: record.metadata,
+        filePath: record.filePath,
+        keepRecordingFile: record.keepRecordingFile,
+        allowCellular: record.allowCellular,
+        minChunkSize: record.minChunkSize,
+        createdAt: record.createdAt,
+        stopReason: record.stopReason,
+        interrupted,
       },
-    });
-    return entry;
+      {
+        uploadUrlProvider: noProvider,
+        finishedSize: recordedBytes,
+        restored: {
+          status,
+          target: record.target,
+          committedOffset: record.committedOffset,
+        },
+      }
+    );
   }
 
   /** The Interrupted Recording's length after truncation; 0 if the file is gone. */
@@ -525,41 +506,51 @@ export class RecordingUploadsManager {
 
   // ---- Internals
 
-  private createEngine(
-    entry: Entry,
-    options: Pick<
+  /** A registry entry with its upload engine and progress throttle. */
+  private createEntry(
+    fields: EntryFields,
+    engineOptions: Pick<
       RecordingUploadOptions,
-      | 'filePath'
-      | 'uploadUrlProvider'
-      | 'minChunkSize'
-      | 'allowCellular'
-      | 'finishedSize'
-      | 'restored'
+      'uploadUrlProvider' | 'finishedSize' | 'restored'
     >
-  ): RecordingUpload {
-    return new RecordingUpload({
-      ...options,
-      recordingId: entry.id,
-      metadata: entry.metadata,
-      transport: this.options.transport,
-      platform: this.options.platform,
-      schedule: this.options.schedule,
-      random: this.options.random,
-      onStateChange: (status) => {
-        this.persist(entry);
-        this.onStateChange(entry, status);
-        if (
-          this.entries.get(entry.id) === entry &&
-          (status.state === 'completed' || status.state === 'failed')
-        ) {
-          this.onSettled(entry, status);
-        }
-      },
-      onCommittedOffsetChange: () => {
-        this.persist(entry);
-        entry.progress.request();
-      },
-    });
+  ): Entry {
+    // The callbacks only run once `entry` is assigned.
+    const entry: Entry = {
+      ...fields,
+      persistQueued: false,
+      progress: new ProgressThrottle(this.now, this.schedule, () =>
+        this.emitProgress(entry)
+      ),
+      engine: new RecordingUpload({
+        ...engineOptions,
+        recordingId: fields.id,
+        metadata: fields.metadata,
+        filePath: fields.filePath ?? '',
+        minChunkSize: fields.minChunkSize,
+        allowCellular: fields.allowCellular,
+        transport: this.options.transport,
+        platform: this.options.platform,
+        schedule: this.schedule,
+        random: this.options.random,
+        onStateChange: (status) => this.onEngineStateChange(entry, status),
+        onCommittedOffsetChange: () => {
+          this.persist(entry);
+          entry.progress.request();
+        },
+      }),
+    };
+    return entry;
+  }
+
+  private onEngineStateChange(entry: Entry, status: UploadStatus): void {
+    this.persist(entry);
+    this.onStateChange(entry, status);
+    if (
+      this.entries.get(entry.id) === entry &&
+      (status.state === 'completed' || status.state === 'failed')
+    ) {
+      this.onSettled(entry, status);
+    }
   }
 
   private onStateChange(entry: Entry, status: UploadStatus): void {

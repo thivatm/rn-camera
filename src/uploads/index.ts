@@ -5,10 +5,26 @@ import {
   createNativePlatform,
   createNativeTransport,
 } from '../engine/nativeTransport';
+import type { Platform } from '../engine/transport';
 import type { Spec } from '../specs/NativeRecordingUploads';
 import { RecordingUploadsManager } from './RecordingUploadsManager';
 
 let manager: RecordingUploadsManager | null = null;
+let platform: Platform | null = null;
+
+/**
+ * The native `RecordingUploads` Turbo Module. Required lazily: looking it up
+ * throws where it is not linked (e.g. Jest suites that never touch uploads).
+ */
+function nativeRecordingUploads(): Spec {
+  return require('../specs/NativeRecordingUploads').default;
+}
+
+/** File, storage and signal primitives over the native module, created on first use. */
+export function getNativePlatform(): Platform {
+  platform ??= createNativePlatform(nativeRecordingUploads());
+  return platform;
+}
 
 /**
  * The single registry, created on first use. Capture code (tickets 13/14)
@@ -17,13 +33,9 @@ let manager: RecordingUploadsManager | null = null;
  */
 export function getRecordingUploadsManager(): RecordingUploadsManager {
   if (!manager) {
-    // Required lazily: looking the Turbo Module up throws where it is not
-    // linked (e.g. Jest suites that never touch uploads).
-    const NativeRecordingUploads: Spec =
-      require('../specs/NativeRecordingUploads').default;
     manager = new RecordingUploadsManager({
-      transport: createNativeTransport(NativeRecordingUploads),
-      platform: createNativePlatform(NativeRecordingUploads),
+      transport: createNativeTransport(nativeRecordingUploads()),
+      platform: getNativePlatform(),
       appState: AppState,
     });
   }
