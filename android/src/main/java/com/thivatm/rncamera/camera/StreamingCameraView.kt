@@ -8,6 +8,9 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.widget.FrameLayout
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.WritableMap
@@ -22,7 +25,8 @@ import java.io.File
 
 /**
  * Native view behind the `StreamingCamera` Fabric component. Shows the preview
- * only while it is on screen and the app is in the foreground; without
+ * only while it is on screen and the app is in the foreground (see
+ * [HostLifecycle]); without
  * permission it stays empty and dispatches `onCameraError`. Records to
  * `filesDir/rn-camera/recordings/<recordingId>.mp4`; capture events go to JS
  * through the `StreamingCameraRecorder` module.
@@ -48,6 +52,15 @@ class StreamingCameraView(private val reactContext: ThemedReactContext) :
     ),
   )
 
+  private val hostLifecycle = HostLifecycle(controller) { isAttachedToWindow }
+
+  /** The app's foreground / background, from the process lifecycle. */
+  private val appLifecycle = object : DefaultLifecycleObserver {
+    override fun onStart(owner: LifecycleOwner) = hostLifecycle.onAppForeground()
+
+    override fun onStop(owner: LifecycleOwner) = hostLifecycle.onAppBackground()
+  }
+
   private val pinch = ScaleGestureDetector(
     reactContext,
     object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -71,22 +84,23 @@ class StreamingCameraView(private val reactContext: ThemedReactContext) :
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     reactContext.addLifecycleEventListener(this)
+    // Replays ON_START at once if the app is already in the foreground.
+    ProcessLifecycleOwner.get().lifecycle.addObserver(appLifecycle)
     controller.start()
   }
 
   override fun onDetachedFromWindow() {
     reactContext.removeLifecycleEventListener(this)
+    ProcessLifecycleOwner.get().lifecycle.removeObserver(appLifecycle)
     controller.stop()
     super.onDetachedFromWindow()
   }
 
-  override fun onHostResume() {
-    if (isAttachedToWindow) controller.start()
-  }
+  override fun onHostResume() = hostLifecycle.onHostResume()
 
-  override fun onHostPause() = controller.stop(backgrounded = true)
+  override fun onHostPause() = hostLifecycle.onHostPause()
 
-  override fun onHostDestroy() = controller.stop(backgrounded = true)
+  override fun onHostDestroy() = hostLifecycle.onHostDestroy()
 
   @SuppressLint("ClickableViewAccessibility")
   override fun onTouchEvent(event: MotionEvent): Boolean {
