@@ -227,7 +227,7 @@ describe('retryable failures: backoff, status query, resend', () => {
     // Two Chunks: 8 MiB fails twice, then the final one fails once.
     let injected = false;
     const { upload, clock } = finishedUpload(url, 9 * MIB, {
-      onProgress: ({ committedOffset }) => {
+      onCommittedOffsetChange: ({ committedOffset }) => {
         if (committedOffset === 8 * MIB && !injected) {
           injected = true;
           server.configure(id, { faults: [{ type: 'status', status: 503 }] });
@@ -292,7 +292,7 @@ describe('offline', () => {
     let goOffline = false;
     const { upload, states } = finishedUpload(url, 9 * MIB, {
       platform,
-      onProgress: ({ committedOffset }) => {
+      onCommittedOffsetChange: ({ committedOffset }) => {
         if (committedOffset === 8 * MIB) goOffline = true;
       },
     });
@@ -466,7 +466,8 @@ describe('Retry Upload', () => {
       transport: createNodeTransport(),
       schedule: fakeClock().schedule,
       onStateChange: (status) => states.push(status.state),
-      onProgress: ({ committedOffset }) => progress.push(committedOffset),
+      onCommittedOffsetChange: ({ committedOffset }) =>
+        progress.push(committedOffset),
     });
     upload.start();
     upload.fileGrew(append(bytes(3 * MIB, 1)));

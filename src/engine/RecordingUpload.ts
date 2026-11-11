@@ -78,7 +78,8 @@ export type RecordingUploadOptions = {
   /** A value in `[0, 1)`, for backoff jitter. Default: `Math.random`. */
   random?: () => number;
   onStateChange?: (status: UploadStatus) => void;
-  onProgress?: (progress: {
+  /** The server confirmed a new Committed Offset (or Retry Upload reset it to 0). */
+  onCommittedOffsetChange?: (offsets: {
     recordedBytes: number;
     committedOffset: number;
   }) => void;
@@ -614,7 +615,7 @@ export class RecordingUpload {
   private setCommittedOffset(committedOffset: number): void {
     if (this.cancelled) return;
     this.committedOffset = committedOffset;
-    this.options.onProgress?.({
+    this.options.onCommittedOffsetChange?.({
       recordedBytes: this.recordedBytes,
       committedOffset,
     });

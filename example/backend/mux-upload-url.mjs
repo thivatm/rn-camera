@@ -4,7 +4,7 @@
 //
 //   MUX_TOKEN_ID=... MUX_TOKEN_SECRET=... node example/backend/mux-upload-url.mjs
 //
-// Then set UPLOAD_URL_ENDPOINT in example/src/config.ts to
+// Then set UPLOAD_URL_BACKEND in example/src/config.ts to
 // http://<this machine>:3000/uploads. Requires Node >= 22.
 import { createServer } from 'node:http';
 

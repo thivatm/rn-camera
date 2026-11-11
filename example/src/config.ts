@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { createUploadUrlProvider } from './uploadUrlProvider';
 
 /**
- * Your backend endpoint that creates an Upload URL. It receives
+ * The URL of your backend that creates an Upload URL. It receives
  * `POST { recordingId, metadata }` and replies `{ url }` (plus optional
  * `headers`). See `example/backend/mux-upload-url.mjs` for a Mux version.
  *
@@ -11,9 +11,9 @@ import { createUploadUrlProvider } from './uploadUrlProvider';
  * Android emulators reach the host machine at 10.0.2.2. On a real device use
  * your machine's LAN address or a deployed backend.
  */
-export const UPLOAD_URL_ENDPOINT = Platform.select({
+export const UPLOAD_URL_BACKEND = Platform.select({
   android: 'http://10.0.2.2:8787/__control/uploads',
   default: 'http://localhost:8787/__control/uploads',
 });
 
-export const uploadUrlProvider = createUploadUrlProvider(UPLOAD_URL_ENDPOINT);
+export const uploadUrlProvider = createUploadUrlProvider(UPLOAD_URL_BACKEND);

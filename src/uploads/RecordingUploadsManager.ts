@@ -555,7 +555,7 @@ export class RecordingUploadsManager {
           this.onSettled(entry, status);
         }
       },
-      onProgress: () => {
+      onCommittedOffsetChange: () => {
         this.persist(entry);
         entry.progress.request();
       },

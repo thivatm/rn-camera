@@ -8,7 +8,7 @@ function respond(status: number, body: unknown) {
 }
 
 describe('createUploadUrlProvider', () => {
-  it('POSTs the recording to the endpoint and returns its Upload URL', async () => {
+  it('POSTs the recording to the backend and returns its Upload URL', async () => {
     const fetchImpl = respond(200, { url: 'https://storage.example/upload/1' });
     const provider = createUploadUrlProvider(
       'https://backend.example/uploads',

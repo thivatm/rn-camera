@@ -97,7 +97,7 @@ public final class FragmentedMP4Writer {
   private let onFragment: (Int64) -> Void
 
   private var writer: AVAssetWriter?
-  private lazy var segmentReceiver = SegmentReceiver { [weak self] data in self?.appendSegment(data) }
+  private lazy var fragmentReceiver = FragmentReceiver { [weak self] data in self?.appendFragment(data) }
   private var videoInput: AVAssetWriterInput?
   private var audioInput: AVAssetWriterInput?
   private var startTime: CMTime?
@@ -109,7 +109,7 @@ public final class FragmentedMP4Writer {
   public var onFailure: ((Error) -> Void)?
 
   /// `audioSettings` nil = no audio track. `onFragment(totalBytes)` is called
-  /// after each segment is appended, on an AVFoundation queue.
+  /// after each Fragment (or the init data) is appended, on an AVFoundation queue.
   public init(
     file: RecordingFile, settings: RecordingSettings, audioSettings: [String: Any]?,
     expectsRealTime: Bool = true, onFragment: @escaping (Int64) -> Void
@@ -160,9 +160,9 @@ public final class FragmentedMP4Writer {
 
   // MARK: - Private
 
-  private func appendSegment(_ segmentData: Data) {
+  private func appendFragment(_ fragmentData: Data) {
     do {
-      onFragment(try file.append(segmentData))
+      onFragment(try file.append(fragmentData))
     } catch {
       failure = failure ?? error
     }
@@ -179,7 +179,7 @@ public final class FragmentedMP4Writer {
     writer.preferredOutputSegmentInterval = CMTime(
       seconds: Double(Self.fragmentSeconds), preferredTimescale: 1)
     writer.initialSegmentStartTime = pts
-    writer.delegate = segmentReceiver
+    writer.delegate = fragmentReceiver
 
     var compression: [String: Any] = [
       AVVideoAverageBitRateKey: settings.bitsPerSecond,
@@ -236,9 +236,10 @@ public final class FragmentedMP4Writer {
   }
 }
 
+/// Hands each Fragment (AVFoundation's "segment") to the writer.
 /// `AVAssetWriterDelegate` (an NSObject), kept private so the writer stays a
 /// plain Swift class out of the generated ObjC header.
-private final class SegmentReceiver: NSObject, AVAssetWriterDelegate {
+private final class FragmentReceiver: NSObject, AVAssetWriterDelegate {
   private let receive: (Data) -> Void
 
   init(receive: @escaping (Data) -> Void) {
