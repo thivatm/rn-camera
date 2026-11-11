@@ -1,7 +1,6 @@
 // Node implementation of the Transport / Platform seam, standing in for the
 // native `RecordingUploads` module in Jest. Not part of the published build
 // (`__fixtures__` is excluded by bob, tsconfig.build.json and package.json).
-/// <reference types="node" />
 import fs from 'node:fs';
 import http from 'node:http';
 import type {

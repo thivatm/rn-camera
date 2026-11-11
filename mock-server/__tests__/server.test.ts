@@ -1,7 +1,6 @@
 /**
  * @jest-environment node
  */
-/// <reference types="node" />
 import http from 'node:http';
 import { startMockResumableServer, type MockResumableServer } from '../server';
 

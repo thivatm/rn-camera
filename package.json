@@ -72,6 +72,7 @@
     "@react-native/jest-preset": "0.88.0",
     "@testing-library/react-native": "^14.1.0",
     "@types/jest": "^29",
+    "@types/node": "^22.18.0",
     "@types/react": "^19.2.0",
     "del-cli": "^8.0.1",
     "eslint": "^9.39.5",

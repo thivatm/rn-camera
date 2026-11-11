@@ -1,7 +1,6 @@
 /**
  * @jest-environment node
  */
-/// <reference types="node" />
 // Persistence and relaunch (spec §4 "app killed mid-capture", §6). A
 // "relaunch" is a second manager over a copy of the first one's key/value
 // store, taken at the moment the app is "killed".

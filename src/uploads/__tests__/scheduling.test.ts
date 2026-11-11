@@ -1,7 +1,6 @@
 /**
  * @jest-environment node
  */
-/// <reference types="node" />
 // Upload Queue scheduling (spec §5.5) and file retention (§7), with the
 // network type and app state injected.
 import fs from 'node:fs';

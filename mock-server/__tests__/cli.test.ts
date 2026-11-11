@@ -1,7 +1,6 @@
 /**
  * @jest-environment node
  */
-/// <reference types="node" />
 import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';

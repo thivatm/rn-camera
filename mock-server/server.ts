@@ -4,7 +4,6 @@
  * Only erasable TypeScript syntax is used so Node (>= 22.18) can run this file
  * directly via `cli.mjs`, and Jest can import it through Babel.
  */
-/// <reference types="node" />
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 

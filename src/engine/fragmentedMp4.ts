@@ -97,7 +97,10 @@ function readUint32(bytes: Uint8Array, at: number): number {
   );
 }
 
-/** Base64 (from `readRange`) to bytes. `atob` is built into Hermes and Node. */
+/** Built into Hermes and Node; not in the `ESNext` lib the build type-checks against. */
+declare const atob: (base64: string) => string;
+
+/** Base64 (from `readRange`) to bytes. */
 function base64ToBytes(base64: string): Uint8Array {
   return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 }
