@@ -1,5 +1,7 @@
 package com.thivatm.rncamera.recording
 
+import com.thivatm.rncamera.camera.VideoCodec
+import com.thivatm.rncamera.camera.VideoResolution
 import com.thivatm.rncamera.camera.VideoSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -38,7 +40,7 @@ class RecorderTest {
 
   @Test
   fun theCaptureGetsTheVideoSettingsAndAudioFlag() {
-    val custom = CaptureConfig(VideoSettings(codec = "hevc", resolution = "720p", fps = 24, bitrate = 2_000_000), audio = false)
+    val custom = CaptureConfig(VideoSettings(codec = VideoCodec.HEVC, resolution = VideoResolution.HD_720P, fps = 24, bitrate = 2_000_000), audio = false)
 
     recorder.start("rec-1", custom)
 

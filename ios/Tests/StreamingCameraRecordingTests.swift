@@ -52,7 +52,7 @@ final class StreamingCameraRecordingTests: XCTestCase {
     XCTAssertEqual(session.recordingFile?.path, "/recordings/rec-1.mp4")
     XCTAssertEqual(
       session.recordingSettings,
-      RecordingSettings(codec: "hevc", resolution: "720p", fps: 60, bitrate: 4_000_000, audio: false))
+      RecordingSettings(codec: .hevc, resolution: .hd720p, fps: 60, bitrate: 4_000_000, audio: false))
     XCTAssertEqual(events.events, [.started(id: "rec-1", filePath: "/recordings/rec-1.mp4")])
   }
 

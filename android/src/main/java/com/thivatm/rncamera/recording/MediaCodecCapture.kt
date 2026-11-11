@@ -10,11 +10,12 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import androidx.media3.common.util.MediaFormatUtil
+import com.thivatm.rncamera.camera.VideoResolution
 import java.io.File
 import java.nio.ByteBuffer
 
 /** What the encoder asks the camera for. */
-data class VideoSourceRequest(val resolution: String, val fps: Int)
+data class VideoSourceRequest(val resolution: VideoResolution, val fps: Int)
 
 /** Camera frames for the video encoder. Real one: `CameraXSession`. */
 interface VideoFrameSource {

@@ -1,5 +1,6 @@
 package com.thivatm.rncamera.recording
 
+import com.thivatm.rncamera.camera.VideoCodec
 import com.thivatm.rncamera.camera.VideoSettings
 
 /** Video encoder parameters resolved from the `video` prop. */
@@ -16,13 +17,13 @@ data class EncoderSettings(
 
   companion object {
     fun of(video: VideoSettings): EncoderSettings {
-      val hevc = video.codec == "hevc"
-      // Same defaults as iOS.
-      val defaultBitrate = if (video.resolution == "720p") 3_000_000 else 6_000_000
       return EncoderSettings(
-        mimeType = if (hevc) "video/hevc" else "video/avc",
+        mimeType = when (video.codec) {
+          VideoCodec.HEVC -> "video/hevc"
+          VideoCodec.H264 -> "video/avc"
+        },
         fps = video.fps.takeIf { it > 0 } ?: 30,
-        bitrate = video.bitrate.takeIf { it > 0 } ?: defaultBitrate,
+        bitrate = video.bitrate.takeIf { it > 0 } ?: video.resolution.defaultBitrate,
       )
     }
   }

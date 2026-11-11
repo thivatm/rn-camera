@@ -149,7 +149,7 @@ class StreamingCameraControllerTest {
     controller.setVideoCodec(null)
     controller.setVideoResolution(null)
 
-    assertEquals(VideoSettings(codec = "h264", resolution = "1080p", fps = 0, bitrate = 0), controller.video)
+    assertEquals(VideoSettings(codec = VideoCodec.H264, resolution = VideoResolution.FHD_1080P, fps = 0, bitrate = 0), controller.video)
   }
 
   @Test
@@ -159,7 +159,7 @@ class StreamingCameraControllerTest {
     controller.setVideoFps(60)
     controller.setVideoBitrate(2_000_000)
 
-    assertEquals(VideoSettings(codec = "hevc", resolution = "720p", fps = 60, bitrate = 2_000_000), controller.video)
+    assertEquals(VideoSettings(codec = VideoCodec.HEVC, resolution = VideoResolution.HD_720P, fps = 60, bitrate = 2_000_000), controller.video)
   }
 
   @Test

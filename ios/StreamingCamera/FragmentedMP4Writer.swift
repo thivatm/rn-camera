@@ -2,19 +2,41 @@ import AVFoundation
 import CoreMedia
 import UniformTypeIdentifiers
 
+/// The `videoCodec` prop.
+public enum VideoCodec: String, Equatable {
+  case h264, hevc
+
+  /// Anything but `"hevc"` is H.264.
+  public init(prop: String) { self = VideoCodec(rawValue: prop) ?? .h264 }
+}
+
+/// The `videoResolution` prop.
+public enum VideoResolution: String, Equatable {
+  case hd720p = "720p", fhd1080p = "1080p"
+
+  /// Anything but `"720p"` is 1080p.
+  public init(prop: String) { self = VideoResolution(rawValue: prop) ?? .fhd1080p }
+
+  /// Bits per second when the `videoBitrate` prop is 0 (same as Android).
+  var defaultBitsPerSecond: Int {
+    switch self {
+    case .hd720p: return 3_000_000
+    case .fhd1080p: return 6_000_000
+    }
+  }
+}
+
 /// What to record, from the `video*` / `audio` props (spec §3.2).
 public struct RecordingSettings: Equatable {
-  /// `"h264"` | `"hevc"`.
-  public var codec: String
-  /// `"720p"` | `"1080p"`.
-  public var resolution: String
+  public var codec: VideoCodec
+  public var resolution: VideoResolution
   /// 0 = default (30).
   public var fps: Int
   /// Bits per second; 0 = default for the resolution.
   public var bitrate: Int
   public var audio: Bool
 
-  public init(codec: String, resolution: String, fps: Int, bitrate: Int, audio: Bool) {
+  public init(codec: VideoCodec, resolution: VideoResolution, fps: Int, bitrate: Int, audio: Bool) {
     self.codec = codec
     self.resolution = resolution
     self.fps = fps
@@ -23,7 +45,7 @@ public struct RecordingSettings: Equatable {
   }
 
   var framesPerSecond: Int { fps > 0 ? fps : 30 }
-  var bitsPerSecond: Int { bitrate > 0 ? bitrate : (resolution == "720p" ? 3_000_000 : 6_000_000) }
+  var bitsPerSecond: Int { bitrate > 0 ? bitrate : resolution.defaultBitsPerSecond }
 }
 
 /// The Recording File: append-only (ADR 0002, 0003). Bytes, once written,
@@ -188,13 +210,18 @@ public final class FragmentedMP4Writer {
       AVVideoMaxKeyFrameIntervalDurationKey: Self.fragmentSeconds,
       AVVideoAllowFrameReorderingKey: false,
     ]
-    if settings.codec != "hevc" {
+    let codecType: AVVideoCodecType
+    switch settings.codec {
+    case .hevc:
+      codecType = .hevc
+    case .h264:
+      codecType = .h264
       compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
     }
     let video = AVAssetWriterInput(
       mediaType: .video,
       outputSettings: [
-        AVVideoCodecKey: settings.codec == "hevc" ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
+        AVVideoCodecKey: codecType,
         AVVideoWidthKey: Int(dimensions.width),
         AVVideoHeightKey: Int(dimensions.height),
         AVVideoCompressionPropertiesKey: compression,

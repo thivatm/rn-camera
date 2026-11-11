@@ -152,7 +152,10 @@ class CameraXSession(
       listener.onSourceLost()
       return
     }
-    val quality = if (request.resolution == "720p") Quality.HD else Quality.FHD
+    val quality = when (request.resolution) {
+      VideoResolution.HD_720P -> Quality.HD
+      VideoResolution.FHD_1080P -> Quality.FHD
+    }
     val output = EncoderOutput(
       QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(quality)),
       listener,

@@ -25,7 +25,7 @@ final class FragmentedMP4WriterTests: XCTestCase {
     var reportedSizes: [Int64] = []
     let writer = FragmentedMP4Writer(
       file: file,
-      settings: RecordingSettings(codec: "h264", resolution: "720p", fps: 30, bitrate: 1_000_000, audio: false),
+      settings: RecordingSettings(codec: .h264, resolution: .hd720p, fps: 30, bitrate: 1_000_000, audio: false),
       audioSettings: nil,
       expectsRealTime: false,
       onFragment: { totalBytes in

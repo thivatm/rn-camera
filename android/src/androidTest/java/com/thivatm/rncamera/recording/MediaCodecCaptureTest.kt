@@ -9,6 +9,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Surface
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.thivatm.rncamera.camera.VideoCodec
+import com.thivatm.rncamera.camera.VideoResolution
 import com.thivatm.rncamera.camera.VideoSettings
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -33,7 +35,7 @@ class MediaCodecCaptureTest {
   private fun record(
     seconds: Int,
     audio: Boolean,
-    codec: String = "h264",
+    codec: VideoCodec = VideoCodec.H264,
     micStartDelayMs: Long = 0,
   ): Result {
     val file = File(tmp.root, "rec.mp4")
@@ -57,7 +59,7 @@ class MediaCodecCaptureTest {
         finished.countDown()
       }
     }
-    main.post { capture.start(file, CaptureConfig(VideoSettings(codec = codec, resolution = "720p"), audio), events) }
+    main.post { capture.start(file, CaptureConfig(VideoSettings(codec = codec, resolution = VideoResolution.HD_720P), audio), events) }
     SystemClock.sleep(seconds * 1000L)
     main.post { capture.stop() }
     // Well under the stop timeout: the file is finished as soon as the last frame is in.
@@ -122,7 +124,7 @@ class MediaCodecCaptureTest {
 
   @Test
   fun hevcIsSupported() {
-    val r = record(seconds = 3, audio = true, codec = "hevc")
+    val r = record(seconds = 3, audio = true, codec = VideoCodec.HEVC)
 
     assertTrue(String(r.file.readBytes(), Charsets.ISO_8859_1).contains("hvc1"))
   }

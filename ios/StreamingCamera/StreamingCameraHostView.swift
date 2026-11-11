@@ -163,7 +163,8 @@ public final class StreamingCameraHostView: UIView {
     session.startRecording(
       to: file,
       settings: RecordingSettings(
-        codec: videoCodec, resolution: videoResolution, fps: videoFps, bitrate: videoBitrate,
+        codec: VideoCodec(prop: videoCodec), resolution: VideoResolution(prop: videoResolution),
+        fps: videoFps, bitrate: videoBitrate,
         audio: audio),
       onStarted: { [weak self] error in
         if let error {

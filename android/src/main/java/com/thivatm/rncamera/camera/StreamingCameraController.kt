@@ -7,13 +7,34 @@ import com.thivatm.rncamera.recording.StopReasons
 
 enum class CameraPosition { FRONT, BACK }
 
+/** The `videoCodec` prop. Anything but `"hevc"` is H.264. */
+enum class VideoCodec {
+  H264, HEVC;
+
+  companion object {
+    fun of(value: String?) = if (value == "hevc") HEVC else H264
+  }
+}
+
+/** The `videoResolution` prop. Anything but `"720p"` is 1080p. */
+enum class VideoResolution(
+  /** Bits per second when the `videoBitrate` prop is 0 (same as iOS). */
+  val defaultBitrate: Int,
+) {
+  HD_720P(3_000_000), FHD_1080P(6_000_000);
+
+  companion object {
+    fun of(value: String?) = if (value == "720p") HD_720P else FHD_1080P
+  }
+}
+
 /**
- * The `video*` props (spec §3.2 `video`, flattened). Stored for recording.
- * `fps` and `bitrate` of 0 leave the choice to the encoder.
+ * The `video*` props (spec §3.2 `video`, flattened), parsed. Stored for
+ * recording. `fps` and `bitrate` of 0 leave the choice to the encoder.
  */
 data class VideoSettings(
-  val codec: String = "h264",
-  val resolution: String = "1080p",
+  val codec: VideoCodec = VideoCodec.H264,
+  val resolution: VideoResolution = VideoResolution.FHD_1080P,
   val fps: Int = 0,
   val bitrate: Int = 0,
 )
@@ -104,11 +125,11 @@ class StreamingCameraController(
     private set
 
   fun setVideoCodec(value: String?) {
-    video = video.copy(codec = value ?: VideoSettings().codec)
+    video = video.copy(codec = VideoCodec.of(value))
   }
 
   fun setVideoResolution(value: String?) {
-    video = video.copy(resolution = value ?: VideoSettings().resolution)
+    video = video.copy(resolution = VideoResolution.of(value))
   }
 
   fun setVideoFps(value: Int) {

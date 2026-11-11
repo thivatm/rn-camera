@@ -249,7 +249,11 @@ final class AVCameraSession: CameraSession {
     session.beginConfiguration()
     defer { session.commitConfiguration() }
 
-    let preset: AVCaptureSession.Preset = settings.resolution == "720p" ? .hd1280x720 : .hd1920x1080
+    let preset: AVCaptureSession.Preset
+    switch settings.resolution {
+    case .hd720p: preset = .hd1280x720
+    case .fhd1080p: preset = .hd1920x1080
+    }
     session.sessionPreset = session.canSetSessionPreset(preset) ? preset : .high
 
     if !session.outputs.contains(videoOutput) {

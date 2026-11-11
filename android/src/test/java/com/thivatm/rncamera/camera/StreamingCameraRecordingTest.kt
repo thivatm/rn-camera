@@ -35,7 +35,7 @@ class StreamingCameraRecordingTest {
 
     controller.startRecording("rec-1")
 
-    assertEquals(CaptureConfig(VideoSettings(codec = "hevc", resolution = "720p"), audio = false), capture.config)
+    assertEquals(CaptureConfig(VideoSettings(codec = VideoCodec.HEVC, resolution = VideoResolution.HD_720P), audio = false), capture.config)
     assertEquals("started rec-1", events.log.single().substringBeforeLast(' '))
   }
 
