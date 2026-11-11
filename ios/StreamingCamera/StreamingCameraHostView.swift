@@ -5,13 +5,19 @@ import UIKit
 ///
 /// Shows the camera preview while it is in a window and camera access is
 /// granted. Without access it shows nothing and reports `permissionMissing`.
-/// Capture itself sits behind the `CameraSession` seam.
+/// Records at most one Live Recording (spec §4) and reports it through
+/// `RecordingEvents`; it stops on its own with `interrupted`, `backgrounded`,
+/// or `user` when removed from the window. Capture itself sits behind the
+/// `CameraSession` seam.
 @objc(StreamingCameraHostView)
 public final class StreamingCameraHostView: UIView {
   private let authorizer: CameraAuthorizing
   private let makeSession: () -> CameraSession
+  private let recordingsDirectory: URL
+  private let recordingEvents: RecordingEvents
   private var session: CameraSession?
   private var isActive = false
+  private var recording: LiveRecording?
 
   private lazy var pinchRecognizer = UIPinchGestureRecognizer(
     target: self, action: #selector(onPinch(_:)))
@@ -28,7 +34,8 @@ public final class StreamingCameraHostView: UIView {
 
   /// `"front"` | `"back"`.
   @objc public var position = "back" {
-    didSet { if position != oldValue { session?.setPosition(position) } }
+    // Ignored while recording; applied once the recording stops.
+    didSet { if position != oldValue, recording == nil { session?.setPosition(position) } }
   }
 
   @objc public var torch = false {
@@ -51,7 +58,7 @@ public final class StreamingCameraHostView: UIView {
     didSet { setGesture(tapRecognizer, enabled: enableTapToFocus) }
   }
 
-  // Recording props: stored here for the recording pipeline.
+  // Recording props, read when a recording starts.
   @objc public var videoCodec = "h264"
   @objc public var videoResolution = "1080p"
   /// 0 = default.
@@ -65,10 +72,14 @@ public final class StreamingCameraHostView: UIView {
   public init(
     frame: CGRect,
     authorizer: CameraAuthorizing,
-    makeSession: @escaping () -> CameraSession
+    makeSession: @escaping () -> CameraSession,
+    recordingsDirectory: URL = RecordingFile.defaultDirectory(),
+    recordingEvents: RecordingEvents = StreamingCameraRecorderEvents.shared
   ) {
     self.authorizer = authorizer
     self.makeSession = makeSession
+    self.recordingsDirectory = recordingsDirectory
+    self.recordingEvents = recordingEvents
     super.init(frame: frame)
     clipsToBounds = true
   }
@@ -82,6 +93,12 @@ public final class StreamingCameraHostView: UIView {
   }
 
   deinit {
+    // No `self` in the callbacks: weak references can't be formed in deinit.
+    if let recording, recording.stopReason == nil, let session {
+      recording.stopReason = "user"
+      let events = recordingEvents
+      session.stopRecording { finalSize in recording.reportStopped(finalSize, to: events) }
+    }
     session?.stop()
   }
 
@@ -111,6 +128,7 @@ public final class StreamingCameraHostView: UIView {
     let session = self.session ?? makeSession()
     self.session = session
     session.onError = { [weak self] code, message in self?.onCameraError?(code, message) }
+    session.onInterruption = { [weak self] reason in self?.stopRecording(reason) }
 
     session.previewLayer.frame = bounds
     layer.insertSublayer(session.previewLayer, at: 0)
@@ -121,8 +139,64 @@ public final class StreamingCameraHostView: UIView {
 
   private func stop() {
     guard let session else { return }
+    stopRecording("user")
     session.stop()
     session.previewLayer.removeFromSuperlayer()
+  }
+
+  // MARK: - Recording
+
+  /// Starts recording to `<recordingsDirectory>/<recordingId>.mp4`. Reports
+  /// `recordingStarted`, or `recordingFailed` while another recording is live
+  /// or the camera is not showing.
+  @objc public func startRecording(_ recordingId: String) {
+    guard recording == nil else {
+      return recordingEvents.recordingFailed(id: recordingId, message: "A Live Recording already exists")
+    }
+    guard isActive, let session else {
+      return recordingEvents.recordingFailed(id: recordingId, message: "The camera is not ready")
+    }
+    let file = recordingsDirectory.appendingPathComponent("\(recordingId).mp4")
+    let live = LiveRecording(id: recordingId, file: file)
+    recording = live
+    let events = recordingEvents
+    session.startRecording(
+      to: file,
+      settings: RecordingSettings(
+        codec: videoCodec, resolution: videoResolution, fps: videoFps, bitrate: videoBitrate,
+        audio: audio),
+      onStarted: { [weak self] error in
+        if let error {
+          live.failed = true
+          try? FileManager.default.removeItem(at: file)
+          self?.clear(live)
+          events.recordingFailed(id: recordingId, message: error.localizedDescription)
+        } else {
+          live.started = true
+          events.recordingStarted(id: recordingId, filePath: file.path)
+        }
+      },
+      onFragment: { totalBytes in
+        if live.started, !live.failed { events.recordingFragment(id: recordingId, recordedBytes: totalBytes) }
+      })
+  }
+
+  /// Finishes the Live Recording with `reason` (a `StopReason`) and reports
+  /// `recordingStopped` once the file is complete. The first reason wins.
+  @objc public func stopRecording(_ reason: String) {
+    guard let recording, recording.stopReason == nil, let session else { return }
+    recording.stopReason = reason
+    let events = recordingEvents
+    session.stopRecording { [weak self] finalSize in
+      self?.clear(recording)
+      recording.reportStopped(finalSize, to: events)
+    }
+  }
+
+  private func clear(_ live: LiveRecording) {
+    guard recording === live else { return }
+    recording = nil
+    session?.setPosition(position)
   }
 
   // MARK: - Gestures
@@ -157,5 +231,24 @@ public final class StreamingCameraHostView: UIView {
   public func handleTap(at point: CGPoint) {
     guard let session else { return }
     session.focus(atLayerPoint: layer.convert(point, to: session.previewLayer))
+  }
+}
+
+/// The view's Live Recording, shared with the session callbacks.
+private final class LiveRecording {
+  let id: String
+  let file: URL
+  var started = false
+  var failed = false
+  var stopReason: String?
+
+  init(id: String, file: URL) {
+    self.id = id
+    self.file = file
+  }
+
+  func reportStopped(_ finalSize: Int64, to events: RecordingEvents) {
+    guard started, !failed, let stopReason else { return }
+    events.recordingStopped(id: id, reason: stopReason, finalSize: finalSize)
   }
 }

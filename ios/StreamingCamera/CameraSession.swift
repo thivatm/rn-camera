@@ -20,10 +20,27 @@ public protocol CameraSession: AnyObject {
   func setZoom(_ factor: CGFloat)
   /// `point` is in `previewLayer` coordinates.
   func focus(atLayerPoint point: CGPoint)
+
+  // MARK: Recording
+
+  /// The system interrupted capture: `"interrupted"` (phone call, audio
+  /// session interruption, writer failure) or `"backgrounded"`.
+  var onInterruption: ((String) -> Void)? { get set }
+
+  /// Begins appending a fragmented MP4 to a new file at `file`, with the
+  /// orientation fixed now. `onStarted(nil)` once writing has begun, or with
+  /// the error. `onFragment(totalBytes)` after each Fragment. Main thread.
+  func startRecording(
+    to file: URL, settings: RecordingSettings, onStarted: @escaping (Error?) -> Void,
+    onFragment: @escaping (Int64) -> Void)
+  /// Finishes the file (valid any time after `startRecording`) and calls
+  /// `onFinished(finalSize)` on the main thread.
+  func stopRecording(onFinished: @escaping (Int64) -> Void)
 }
 
 /// The real `CameraSession`: an `AVCaptureSession` with a single wide-angle
-/// video input, configured on a private serial queue.
+/// video input, configured on a private serial queue. While recording, video
+/// and audio data outputs feed a `FragmentedMP4Writer` on `recordingQueue`.
 final class AVCameraSession: CameraSession {
   private let session = AVCaptureSession()
   private let queue = DispatchQueue(label: "rn-camera.capture-session")
@@ -32,8 +49,21 @@ final class AVCameraSession: CameraSession {
   private var torchOn = false
   private var zoomFactor: CGFloat = 1
   private var runtimeErrorObserver: NSObjectProtocol?
+  private var interruptionObservers: [NSObjectProtocol] = []
+
+  // Recording. Outputs and `audioInput` are touched on `queue`; `writer` on
+  // `recordingQueue`.
+  private let recordingQueue = DispatchQueue(label: "rn-camera.recording")
+  private let videoOutput = AVCaptureVideoDataOutput()
+  private let audioOutput = AVCaptureAudioDataOutput()
+  private var audioInput: AVCaptureDeviceInput?
+  private var writer: FragmentedMP4Writer?
+  private lazy var sampleReceiver = SampleReceiver { [weak self] output, sample in
+    self?.receive(sample, from: output)
+  }
 
   var onError: ((String, String) -> Void)?
+  var onInterruption: ((String) -> Void)?
 
   /// Caps pinch-to-zoom: beyond this digital zoom is not useful.
   private static let zoomCap: CGFloat = 10
@@ -47,10 +77,12 @@ final class AVCameraSession: CameraSession {
       let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error
       self?.onError?("unknown", error?.localizedDescription ?? "Capture session error")
     }
+    observeInterruptions()
   }
 
   deinit {
     if let runtimeErrorObserver { NotificationCenter.default.removeObserver(runtimeErrorObserver) }
+    interruptionObservers.forEach(NotificationCenter.default.removeObserver)
     let session = self.session
     queue.async { session.stopRunning() }
   }
@@ -110,7 +142,169 @@ final class AVCameraSession: CameraSession {
     }
   }
 
+  // MARK: - Recording
+
+  func startRecording(
+    to file: URL, settings: RecordingSettings, onStarted: @escaping (Error?) -> Void,
+    onFragment: @escaping (Int64) -> Void
+  ) {
+    let rotation = Self.currentVideoRotation()
+    queue.async { [self] in
+      do {
+        let recordingFile = try RecordingFile(creating: file)
+        try configureRecordingOutputs(settings: settings, rotation: rotation)
+        let audioSettings =
+          settings.audio
+          ? audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4) : nil
+        let writer = FragmentedMP4Writer(
+          file: recordingFile, settings: settings, audioSettings: audioSettings,
+          onFragment: { totalBytes in DispatchQueue.main.async { onFragment(totalBytes) } })
+        writer.onFailure = { [weak self] _ in
+          DispatchQueue.main.async { self?.onInterruption?("interrupted") }
+        }
+        recordingQueue.sync { self.writer = writer }
+        DispatchQueue.main.async { onStarted(nil) }
+      } catch {
+        removeRecordingOutputs()
+        DispatchQueue.main.async { onStarted(error) }
+      }
+    }
+  }
+
+  func stopRecording(onFinished: @escaping (Int64) -> Void) {
+    // Finishing must survive the app going to the background.
+    var task = UIBackgroundTaskIdentifier.invalid
+    task = UIApplication.shared.beginBackgroundTask { UIApplication.shared.endBackgroundTask(task) }
+    let done: (Int64) -> Void = { finalSize in
+      DispatchQueue.main.async {
+        onFinished(finalSize)
+        UIApplication.shared.endBackgroundTask(task)
+      }
+    }
+    // After any pending `startRecording` on `queue`.
+    queue.async { [self] in
+      recordingQueue.async { [self] in
+        guard let writer else { return done(0) }
+        self.writer = nil
+        writer.finish(done)
+      }
+      removeRecordingOutputs()
+    }
+  }
+
+  private func receive(_ sample: CMSampleBuffer, from output: AVCaptureOutput) {
+    // On `recordingQueue`.
+    if output === videoOutput {
+      writer?.appendVideo(sample)
+    } else {
+      writer?.appendAudio(sample)
+    }
+  }
+
+  private func observeInterruptions() {
+    let center = NotificationCenter.default
+    let interrupt: (String) -> (Notification) -> Void = { reason in
+      { [weak self] _ in self?.onInterruption?(reason) }
+    }
+    interruptionObservers = [
+      center.addObserver(
+        forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main,
+        using: interrupt("backgrounded")),
+      center.addObserver(
+        forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: .main
+      ) { [weak self] note in
+        let raw = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int
+        let background =
+          raw == AVCaptureSession.InterruptionReason.videoDeviceNotAvailableInBackground.rawValue
+        self?.onInterruption?(background ? "backgrounded" : "interrupted")
+      },
+      center.addObserver(
+        forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+      ) { [weak self] note in
+        let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+        if raw == AVAudioSession.InterruptionType.began.rawValue {
+          self?.onInterruption?("interrupted")
+        }
+      },
+    ]
+  }
+
+  /// Rotation that keeps the recorded video upright for the current
+  /// interface orientation. Read once per recording: orientation is fixed.
+  private static func currentVideoRotation() -> AVCaptureVideoOrientation {
+    let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    switch scene?.interfaceOrientation {
+    case .landscapeLeft: return .landscapeLeft
+    case .landscapeRight: return .landscapeRight
+    case .portraitUpsideDown: return .portraitUpsideDown
+    default: return .portrait
+    }
+  }
+
   // MARK: - On `queue`
+
+  private func configureRecordingOutputs(
+    settings: RecordingSettings, rotation: AVCaptureVideoOrientation
+  ) throws {
+    session.beginConfiguration()
+    defer { session.commitConfiguration() }
+
+    let preset: AVCaptureSession.Preset = settings.resolution == "720p" ? .hd1280x720 : .hd1920x1080
+    session.sessionPreset = session.canSetSessionPreset(preset) ? preset : .high
+
+    if !session.outputs.contains(videoOutput) {
+      guard session.canAddOutput(videoOutput) else {
+        throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "Cannot record video"])
+      }
+      session.addOutput(videoOutput)
+    }
+    videoOutput.alwaysDiscardsLateVideoFrames = true
+    videoOutput.setSampleBufferDelegate(sampleReceiver, queue: recordingQueue)
+    if let connection = videoOutput.connection(with: .video), connection.isVideoOrientationSupported {
+      connection.videoOrientation = rotation
+    }
+
+    if settings.audio {
+      guard
+        let microphone = AVCaptureDevice.default(for: .audio),
+        let audioInput = try? AVCaptureDeviceInput(device: microphone),
+        session.canAddInput(audioInput)
+      else {
+        throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable"])
+      }
+      session.addInput(audioInput)
+      self.audioInput = audioInput
+      if !session.outputs.contains(audioOutput), session.canAddOutput(audioOutput) {
+        session.addOutput(audioOutput)
+      }
+      audioOutput.setSampleBufferDelegate(sampleReceiver, queue: recordingQueue)
+    }
+
+    if settings.fps > 0, let device = input?.device {
+      applyFrameRate(settings.fps, to: device)
+    }
+  }
+
+  private func removeRecordingOutputs() {
+    session.beginConfiguration()
+    if let audioInput { session.removeInput(audioInput) }
+    audioInput = nil
+    session.removeOutput(audioOutput)
+    session.removeOutput(videoOutput)
+    session.commitConfiguration()
+  }
+
+  private func applyFrameRate(_ fps: Int, to device: AVCaptureDevice) {
+    let supported = device.activeFormat.videoSupportedFrameRateRanges.contains {
+      Double(fps) >= $0.minFrameRate && Double(fps) <= $0.maxFrameRate
+    }
+    guard supported else { return }
+    configure(device) {
+      let duration = CMTime(value: 1, timescale: CMTimeScale(fps))
+      device.activeVideoMinFrameDuration = duration
+      device.activeVideoMaxFrameDuration = duration
+    }
+  }
 
   private func configureInput(position: String) {
     let wanted: AVCaptureDevice.Position = position == "front" ? .front : .back
@@ -164,5 +358,23 @@ final class AVCameraSession: CameraSession {
 
   private func report(_ code: String, _ message: String) {
     DispatchQueue.main.async { [weak self] in self?.onError?(code, message) }
+  }
+}
+
+/// Forwards capture samples to a closure (the delegate must be an NSObject).
+private final class SampleReceiver: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
+  AVCaptureAudioDataOutputSampleBufferDelegate
+{
+  private let receive: (AVCaptureOutput, CMSampleBuffer) -> Void
+
+  init(receive: @escaping (AVCaptureOutput, CMSampleBuffer) -> Void) {
+    self.receive = receive
+  }
+
+  func captureOutput(
+    _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+    from connection: AVCaptureConnection
+  ) {
+    receive(output, sampleBuffer)
   }
 }
