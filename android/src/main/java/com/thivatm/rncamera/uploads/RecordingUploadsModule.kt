@@ -18,8 +18,7 @@ import okhttp3.OkHttpClient
 /**
  * Turbo Module `RecordingUploads`: native transport, file primitives and
  * signals behind the shared TS upload engine. Blocking work runs off the JS
- * thread. Rejection codes: `ENOENT` (file missing), `ECANCELLED` (chunk
- * cancelled), `ENETWORK` (network error), `EIO` (anything else).
+ * thread. Rejection codes: see [rejectionCode].
  */
 class RecordingUploadsModule(reactContext: ReactApplicationContext) :
   NativeRecordingUploadsSpec(reactContext) {
@@ -113,15 +112,8 @@ class RecordingUploadsModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun reject(promise: Promise, e: Throwable, ioCode: String) {
-    val code = when (e) {
-      is ChunkCancelledException -> "ECANCELLED"
-      is FileNotFoundException -> "ENOENT"
-      is IOException -> ioCode
-      else -> "EIO"
-    }
-    promise.reject(code, e.message, e)
-  }
+  private fun reject(promise: Promise, e: Throwable, ioCode: String) =
+    promise.reject(rejectionCode(e, ioCode), e.message, e)
 
   private fun ReadableMap.toStringMap(): Map<String, String> {
     val result = mutableMapOf<String, String>()
@@ -141,4 +133,18 @@ class RecordingUploadsModule(reactContext: ReactApplicationContext) :
   companion object {
     const val NAME = NativeRecordingUploadsSpec.NAME
   }
+}
+
+/**
+ * The promise rejection code JS sees for [e] (shared with iOS): `ENOENT`,
+ * `ECANCELLED`, `EIO` for a Recording File that cannot be read, and [ioCode]
+ * for any other `IOException` (`ENETWORK` for a Chunk, `EIO` for file and
+ * store calls).
+ */
+internal fun rejectionCode(e: Throwable, ioCode: String): String = when (e) {
+  is ChunkCancelledException -> "ECANCELLED"
+  is FileNotFoundException -> "ENOENT"
+  is RecordingFileTooShortException -> "EIO"
+  is IOException -> ioCode
+  else -> "EIO"
 }

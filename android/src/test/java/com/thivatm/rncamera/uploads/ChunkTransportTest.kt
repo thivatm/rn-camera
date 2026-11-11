@@ -127,4 +127,31 @@ class ChunkTransportTest {
     assertFalse("send() should return once cancelled", sender.isAlive)
     assertTrue(failure.get() is ChunkCancelledException)
   }
+  @Test
+  fun aRecordingFileShorterThanTheRangeFailsWithEIONotENETWORK() {
+    val file = recordingFile(100)
+    server.enqueue(MockResponse().setResponseCode(308))
+
+    val failure = runCatching {
+      transport.send(
+        ChunkRequest(server.url("/upload").toString(), emptyMap(), file.path, 0, 999, "bytes 0-999/*"),
+      )
+    }.exceptionOrNull()
+
+    assertTrue("send() should fail", failure != null)
+    assertEquals("EIO", rejectionCode(failure!!, ioCode = "ENETWORK"))
+  }
+
+  @Test
+  fun aMissingRecordingFileFailsWithENOENT() {
+    server.enqueue(MockResponse().setResponseCode(308))
+
+    val failure = runCatching {
+      transport.send(
+        ChunkRequest(server.url("/upload").toString(), emptyMap(), tmp.root.path + "/gone.mp4", 0, 9, "bytes 0-9/*"),
+      )
+    }.exceptionOrNull()
+
+    assertEquals("ENOENT", rejectionCode(failure!!, ioCode = "ENETWORK"))
+  }
 }

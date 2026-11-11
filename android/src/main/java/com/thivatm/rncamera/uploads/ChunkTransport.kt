@@ -28,6 +28,12 @@ data class ChunkRequest(
 /** Thrown by [ChunkTransport.send] when the Chunk was cancelled with [ChunkTransport.cancel]. */
 class ChunkCancelledException(url: String) : IOException("Chunk to $url was cancelled")
 
+/**
+ * Thrown by [ChunkTransport.send] when the Recording File holds fewer bytes
+ * than the Chunk's range: a file problem (`EIO`), not a network error.
+ */
+class RecordingFileTooShortException(message: String) : IOException(message)
+
 /** Server reply to a Chunk. Header names are lower-cased. */
 data class ChunkResponse(val status: Int, val headers: Map<String, String>)
 
@@ -85,7 +91,7 @@ private class FileRangeBody(
       val buffer = ByteArray(BUFFER_SIZE)
       while (remaining > 0) {
         val read = raf.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-        if (read < 0) throw java.io.EOFException("Recording File ended before byte $end")
+        if (read < 0) throw RecordingFileTooShortException("Recording File ended before byte $end")
         sink.write(buffer, 0, read)
         remaining -= read
       }

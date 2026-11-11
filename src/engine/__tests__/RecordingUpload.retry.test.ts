@@ -17,6 +17,7 @@ import {
   RecordingUpload,
   type RecordingUploadOptions,
 } from '../RecordingUpload';
+import { TransportError, type Transport } from '../transport';
 import type { UploadState } from '../../types';
 
 const KIB = 1024;
@@ -404,6 +405,50 @@ describe('Recording File missing or empty', () => {
       error: { code: 'unknown', message: 'Recording File is empty' },
     });
     expect(server.getUpload(id).requests).toHaveLength(0);
+  });
+});
+
+describe('Recording File unreadable (EIO)', () => {
+  /** A Transport whose Chunks fail to read the Recording File, as native does for a short file. */
+  function unreadableFileTransport(): Transport {
+    const node = createNodeTransport();
+    return {
+      sendChunk: (request) =>
+        request.end >= request.start
+          ? Promise.reject(
+              new TransportError('EIO', 'Recording File ended before byte 9')
+            )
+          : node.sendChunk(request),
+      cancelChunk: node.cancelChunk,
+    };
+  }
+
+  test('fails with unknown, without retrying, while the file is still there', async () => {
+    const { url } = server.createUpload();
+    const { upload, clock } = finishedUpload(url, 10, {
+      transport: unreadableFileTransport(),
+      platform: createNodePlatform(),
+    });
+    upload.start();
+    expect(await upload.settled()).toEqual({
+      state: 'failed',
+      error: { code: 'unknown', message: 'Recording File ended before byte 9' },
+    });
+    expect(clock.delays).toEqual([]);
+  });
+
+  test('fails with fileMissing when the file is gone', async () => {
+    const { url } = server.createUpload();
+    const { upload } = finishedUpload(url, 10, {
+      transport: unreadableFileTransport(),
+      platform: createNodePlatform(),
+    });
+    fs.rmSync(filePath);
+    upload.start();
+    expect(await upload.settled()).toMatchObject({
+      state: 'failed',
+      error: { code: 'fileMissing' },
+    });
   });
 });
 

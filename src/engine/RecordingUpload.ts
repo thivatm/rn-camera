@@ -518,7 +518,8 @@ export class RecordingUpload {
   /**
    * Runs one request. A network failure backs off and returns `null`, after
    * which the loop queries status and resends; so does a request cut short
-   * by a pause or Retry Upload. Other errors propagate.
+   * by a pause or Retry Upload. A file error (`ENOENT`, `EIO`) fails the
+   * upload and returns `null`. Other errors propagate.
    */
   private async request(
     epoch: number,
@@ -535,6 +536,11 @@ export class RecordingUpload {
       }
       if (code === 'ENOENT') {
         this.fail({ code: 'fileMissing', message: errorMessage(error) });
+        return null;
+      }
+      if (code === 'EIO') {
+        // Not retried: the Recording File could not be read.
+        await this.failUnreadable(errorMessage(error));
         return null;
       }
       throw error;
