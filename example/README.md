@@ -1,97 +1,31 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# @thivatm/rn-camera example
 
-# Getting Started
+A small app for manual end-to-end checks. It has two tabs:
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+- **Camera** shows a preview with record and stop, plus a flip button. Switching tabs unmounts the camera, which stops a Live Recording with reason `user`. The upload carries on.
+- **Recordings** lists every Recording with its upload state, progress and errors. It has **Retry** (for failed uploads), **Delete**, and **Resume uploads**, which you need after an app relaunch.
 
-## Step 1: Start Metro
+## Upload URLs
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+The app never holds Mux credentials. It asks an endpoint you configure in [`src/config.ts`](src/config.ts) (`UPLOAD_URL_ENDPOINT`). The app sends `POST { recordingId, metadata }`, and the endpoint replies `{ url }` (optionally with `headers`).
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+Pick one:
 
-```sh
-# Using npm
-npm start
+- **Mock server (default, no account needed):** run `yarn mock-server` from the repo root. Its `POST /__control/uploads` returns `{ url }`. The default config points the iOS simulator at `localhost:8787` and the Android emulator at `10.0.2.2:8787`. On a real device, run `node mock-server/cli.mjs --host 0.0.0.0` and use your machine's LAN address.
+- **Mux:** run `MUX_TOKEN_ID=… MUX_TOKEN_SECRET=… node example/backend/mux-upload-url.mjs` from the repo root, and set `UPLOAD_URL_ENDPOINT` to `http://<your machine>:3000/uploads`. It creates a Mux direct upload with a 4-hour `timeout` and returns its URL.
 
-# OR using Yarn
-yarn start
-```
+## Running
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+From the repo root:
 
 ```sh
-# Using npm
-npm run android
+yarn
+yarn example start          # Metro
 
-# OR using Yarn
-yarn android
+yarn example android
+# iOS
+cd example && bundle install && bundle exec pod install --project-directory=ios && cd ..
+yarn example ios
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Recording needs a real camera. Simulators and emulators can build and run the app, but they may report `cameraUnavailable`.
