@@ -13,11 +13,11 @@ class EncoderSettingsTest {
   }
 
   @Test
-  fun defaultsAre30FpsAndABitrateForTheResolutionAndCodec() {
-    assertEquals(EncoderSettings("video/avc", 30, 8_000_000), EncoderSettings.of(VideoSettings()))
-    assertEquals(4_000_000, EncoderSettings.of(VideoSettings(resolution = "720p")).bitrate)
-    assertEquals(5_000_000, EncoderSettings.of(VideoSettings(codec = "hevc")).bitrate)
-    assertEquals(2_500_000, EncoderSettings.of(VideoSettings(codec = "hevc", resolution = "720p")).bitrate)
+  // Same defaults as iOS (ticket 13).
+  fun defaultsAre30FpsAnd6MbpsAt1080pOr3MbpsAt720p() {
+    assertEquals(EncoderSettings("video/avc", 30, 6_000_000), EncoderSettings.of(VideoSettings()))
+    assertEquals(3_000_000, EncoderSettings.of(VideoSettings(resolution = "720p")).bitrate)
+    assertEquals(6_000_000, EncoderSettings.of(VideoSettings(codec = "hevc")).bitrate)
   }
 
   @Test

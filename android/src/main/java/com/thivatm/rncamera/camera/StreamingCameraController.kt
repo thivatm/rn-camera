@@ -1,6 +1,9 @@
 package com.thivatm.rncamera.camera
 
 import com.thivatm.rncamera.permissions.CameraPermissions
+import com.thivatm.rncamera.recording.CaptureConfig
+import com.thivatm.rncamera.recording.Recorder
+import com.thivatm.rncamera.recording.StopReasons
 
 enum class CameraPosition { FRONT, BACK }
 
@@ -43,7 +46,15 @@ class StreamingCameraController(
   private val session: CameraSession,
   private val isGranted: (String) -> Boolean,
   private val onError: (CameraError) -> Unit,
+  private val recorder: Recorder? = null,
 ) {
+  init {
+    // `position` is ignored while recording and applied once it stops.
+    recorder?.onFinished = { if (isOpen && openPosition != position) open() }
+  }
+
+  private var openPosition: CameraPosition? = null
+
   private var position = CameraPosition.BACK
   private var torch = false
   private var zoom = 1f
@@ -56,7 +67,7 @@ class StreamingCameraController(
     val next = if (value == "front") CameraPosition.FRONT else CameraPosition.BACK
     if (next == position) return
     position = next
-    if (isOpen) open()
+    if (isOpen && !isRecording) open()
   }
 
   fun setTorch(value: Boolean) {
@@ -126,15 +137,38 @@ class StreamingCameraController(
     open()
   }
 
-  /** The view left the screen or the app went to the background. */
-  fun stop() {
+  /**
+   * The view left the screen (a Live Recording stops with `user`) or, with
+   * [backgrounded], the app went to the background (`backgrounded`).
+   */
+  fun stop(backgrounded: Boolean = false) {
+    recorder?.stop(if (backgrounded) StopReasons.BACKGROUNDED else StopReasons.USER)
     if (!isOpen) return
     isOpen = false
+    openPosition = null
     session.close()
+  }
+
+  private val isRecording get() = recorder?.liveRecordingId != null
+
+  /** The `startRecording` command: records with the current `video*` / `audio` props. */
+  fun startRecording(recordingId: String) {
+    val recorder = recorder ?: return
+    if (!isOpen && !isRecording) {
+      recorder.reject(recordingId, "The camera is not ready")
+      return
+    }
+    recorder.start(recordingId, CaptureConfig(video, audio))
+  }
+
+  /** The `stopRecording` command; [reason] is a `StopReason`. */
+  fun stopRecording(reason: String) {
+    recorder?.stop(reason)
   }
 
   private fun open() {
     isOpen = true
+    openPosition = position
     session.open(position) { message ->
       isOpen = false
       onError(CameraError("cameraUnavailable", message))

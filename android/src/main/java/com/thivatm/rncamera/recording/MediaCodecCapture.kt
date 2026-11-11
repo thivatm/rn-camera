@@ -101,6 +101,7 @@ class MediaCodecCapture(
     /** Subtracted from video timestamps to bring them to the `System.nanoTime` clock audio uses. */
     private var videoClockOffsetUs = 0L
     private var keyframeRequested = false
+    private var videoStopAtUs = Long.MAX_VALUE
 
     @Volatile private var audioStopRequested = false
     private var audioThread: Thread? = null
@@ -136,23 +137,19 @@ class MediaCodecCapture(
     }
 
     fun stop() {
-      video.stop()
+      // Video ends at the first encoded frame from now on; the camera keeps
+      // feeding frames until the file is finished. No signalEndOfInputStream:
+      // after it some encoders (c2.android.*) neither take more frames nor
+      // deliver end of stream.
+      val stopAtUs = nowUs()
       audioStopRequested = true
       mux.post {
         if (stopping) return@post
         stopping = true
-        val codec = videoCodec
-        if (codec == null) {
-          videoDone = true
-        } else {
-          try {
-            codec.signalEndOfInputStream()
-          } catch (e: Exception) {
-            videoDone = true
-          }
-        }
+        videoStopAtUs = stopAtUs
+        if (videoCodec == null) videoDone = true
         maybeFinish()
-        // Don't hang if an encoder never delivers end of stream.
+        // Don't hang if the camera stopped sending frames.
         mux.postDelayed({ finish() }, STOP_TIMEOUT_MS)
       }
     }
@@ -194,24 +191,21 @@ class MediaCodecCapture(
       override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
 
       override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-        if (finished) return
+        if (finished || videoDone) return
+        val ptsUs = info.presentationTimeUs - videoClockOffsetUs
+        val ended = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 || ptsUs >= videoStopAtUs
         try {
-          if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0) {
+          if (!ended && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0) {
             val buffer = codec.getOutputBuffer(index)!!
             buffer.position(info.offset).limit(info.offset + info.size)
-            gate.onSample(
-              TrackKind.VIDEO,
-              buffer,
-              info.presentationTimeUs - videoClockOffsetUs,
-              keyFlag(info.flags),
-            )
+            gate.onSample(TrackKind.VIDEO, buffer, ptsUs, keyFlag(info.flags))
           }
           codec.releaseOutputBuffer(index, false)
         } catch (e: Exception) {
           fail("Could not write video", e)
           return
         }
-        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+        if (ended) {
           videoDone = true
           maybeFinish()
         }
@@ -347,17 +341,21 @@ class MediaCodecCapture(
         // No samples yet: the muxer has nothing to close. The file stays as is.
         Log.w(TAG, "Closing the Recording File failed", e)
       }
-      videoCodec?.let {
-        try { it.stop() } catch (_: Exception) {}
-        it.release()
-      }
-      inputSurface?.release()
       val size = file.length()
       post {
+        // Detach the camera before the encoder's Surface goes away.
+        video.stop()
         session = null
         events.onFinished(size)
+        mux.post {
+          videoCodec?.let {
+            try { it.stop() } catch (_: Exception) {}
+            it.release()
+          }
+          inputSurface?.release()
+          thread.quitSafely()
+        }
       }
-      thread.quitSafely()
     }
 
     private fun interrupt() {
@@ -384,7 +382,7 @@ class MediaCodecCapture(
     const val AUDIO_BITRATE = 128_000
     const val AUDIO_READ_BYTES = 4096
     const val DEQUEUE_TIMEOUT_US = 10_000L
-    const val STOP_TIMEOUT_MS = 3_000L
+    const val STOP_TIMEOUT_MS = 1_500L
 
     /** `MediaFormat.KEY_MAX_B_FRAMES` (API 29); older encoders ignore it. */
     const val KEY_MAX_B_FRAMES = "max-bframes"

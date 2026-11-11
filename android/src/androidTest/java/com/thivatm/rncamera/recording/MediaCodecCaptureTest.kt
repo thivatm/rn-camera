@@ -60,7 +60,8 @@ class MediaCodecCaptureTest {
     main.post { capture.start(file, CaptureConfig(VideoSettings(codec = codec, resolution = "720p"), audio), events) }
     SystemClock.sleep(seconds * 1000L)
     main.post { capture.stop() }
-    assertTrue("capture finished", finished.await(10, TimeUnit.SECONDS))
+    // Well under the stop timeout: the file is finished as soon as the last frame is in.
+    assertTrue("capture finished promptly", finished.await(1_000, TimeUnit.MILLISECONDS))
     assertTrue("frame source stopped", frames.stopped)
     return result
   }

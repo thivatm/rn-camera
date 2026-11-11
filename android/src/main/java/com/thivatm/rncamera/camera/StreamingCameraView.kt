@@ -2,6 +2,8 @@ package com.thivatm.rncamera.camera
 
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -12,20 +14,38 @@ import com.facebook.react.bridge.WritableMap
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.UIManagerHelper
 import com.facebook.react.uimanager.events.Event
+import com.thivatm.rncamera.recording.AudioRecordSource
+import com.thivatm.rncamera.recording.MediaCodecCapture
+import com.thivatm.rncamera.recording.Recorder
+import com.thivatm.rncamera.recording.StreamingCameraRecorderModule
+import java.io.File
 
 /**
  * Native view behind the `StreamingCamera` Fabric component. Shows the preview
  * only while it is on screen and the app is in the foreground; without
- * permission it stays empty and dispatches `onCameraError`.
+ * permission it stays empty and dispatches `onCameraError`. Records to
+ * `filesDir/rn-camera/recordings/<recordingId>.mp4`; capture events go to JS
+ * through the `StreamingCameraRecorder` module.
  */
 @SuppressLint("ViewConstructor")
 class StreamingCameraView(private val reactContext: ThemedReactContext) :
   FrameLayout(reactContext), LifecycleEventListener {
 
+  private val session = CameraXSession(reactContext, this)
+
   val controller = StreamingCameraController(
-    session = CameraXSession(reactContext, this),
+    session = session,
     isGranted = { reactContext.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED },
     onError = ::dispatchError,
+    recorder = Recorder(
+      recordingsDir = File(reactContext.filesDir, "rn-camera/recordings"),
+      capture = MediaCodecCapture(
+        video = session,
+        audioSource = { AudioRecordSource(reactContext) },
+        eventHandler = Handler(Looper.getMainLooper()),
+      ),
+      events = StreamingCameraRecorderModule.events,
+    ),
   )
 
   private val pinch = ScaleGestureDetector(
@@ -64,9 +84,9 @@ class StreamingCameraView(private val reactContext: ThemedReactContext) :
     if (isAttachedToWindow) controller.start()
   }
 
-  override fun onHostPause() = controller.stop()
+  override fun onHostPause() = controller.stop(backgrounded = true)
 
-  override fun onHostDestroy() = controller.stop()
+  override fun onHostDestroy() = controller.stop(backgrounded = true)
 
   @SuppressLint("ClickableViewAccessibility")
   override fun onTouchEvent(event: MotionEvent): Boolean {

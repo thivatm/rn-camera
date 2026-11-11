@@ -16,6 +16,11 @@ class RnCameraPackageTest {
   }
 
   @Test
+  fun registersStreamingCameraRecorderTurboModule() {
+    assertEquals(true, infos["StreamingCameraRecorder"]?.isTurboModule)
+  }
+
+  @Test
   fun registersCameraPermissionsTurboModule() {
     assertEquals(true, infos["CameraPermissions"]?.isTurboModule)
   }

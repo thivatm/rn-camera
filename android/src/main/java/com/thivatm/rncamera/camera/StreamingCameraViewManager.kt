@@ -51,6 +51,12 @@ class StreamingCameraViewManager :
   override fun setAudio(view: StreamingCameraView, value: Boolean) =
     view.controller.setAudio(value)
 
+  override fun startRecording(view: StreamingCameraView, recordingId: String) =
+    view.controller.startRecording(recordingId)
+
+  override fun stopRecording(view: StreamingCameraView, reason: String) =
+    view.controller.stopRecording(reason)
+
   override fun onDropViewInstance(view: StreamingCameraView) {
     view.controller.stop()
     super.onDropViewInstance(view)

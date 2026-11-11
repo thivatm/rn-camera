@@ -17,13 +17,8 @@ data class EncoderSettings(
   companion object {
     fun of(video: VideoSettings): EncoderSettings {
       val hevc = video.codec == "hevc"
-      val hd = video.resolution == "720p"
-      val defaultBitrate = when {
-        hevc && hd -> 2_500_000
-        hevc -> 5_000_000
-        hd -> 4_000_000
-        else -> 8_000_000
-      }
+      // Same defaults as iOS.
+      val defaultBitrate = if (video.resolution == "720p") 3_000_000 else 6_000_000
       return EncoderSettings(
         mimeType = if (hevc) "video/hevc" else "video/avc",
         fps = video.fps.takeIf { it > 0 } ?: 30,

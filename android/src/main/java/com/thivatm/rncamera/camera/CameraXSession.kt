@@ -1,28 +1,48 @@
 package com.thivatm.rncamera.camera
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.util.Range
+import android.view.Surface
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceRequest
+import androidx.camera.core.impl.ConstantObservable
+import androidx.camera.core.impl.Observable
+import androidx.camera.core.impl.Timebase
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.MediaSpec
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoOutput
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.Observer
+import com.thivatm.rncamera.recording.VideoFrameListener
+import com.thivatm.rncamera.recording.VideoFrameSource
+import com.thivatm.rncamera.recording.VideoSourceRequest
 
 /**
  * [CameraSession] on CameraX. Owns its own lifecycle so the camera is bound
  * exactly while the controller has it open, independent of the host Activity.
- * All calls must happen on the main thread.
+ * While recording it also binds a [VideoCapture] whose frames go to the
+ * recording encoder ([VideoFrameSource]). All calls must happen on the main
+ * thread.
  */
 class CameraXSession(
   private val context: Context,
   private val container: FrameLayout,
-) : CameraSession, LifecycleOwner {
+) : CameraSession, VideoFrameSource, LifecycleOwner {
 
   private val registry = LifecycleRegistry(this)
   override val lifecycle: Lifecycle get() = registry
@@ -31,6 +51,8 @@ class CameraXSession(
   private var preview: Preview? = null
   private var provider: ProcessCameraProvider? = null
   private var camera: Camera? = null
+  private var videoCapture: VideoCapture<EncoderOutput>? = null
+  private var cameraStateObserver: Observer<CameraState>? = null
   private var torch = false
   private var zoom = 1f
 
@@ -114,9 +136,88 @@ class CameraXSession(
   }
 
   private fun unbind() {
+    stop()
     preview?.let { provider?.unbind(it) }
     preview = null
     camera = null
+  }
+
+  // VideoFrameSource
+
+  override fun start(request: VideoSourceRequest, listener: VideoFrameListener) {
+    val cameraProvider = provider
+    val cam = camera
+    val previewUseCase = preview
+    if (cameraProvider == null || cam == null || previewUseCase == null) {
+      listener.onSourceLost()
+      return
+    }
+    val quality = if (request.resolution == "720p") Quality.HD else Quality.FHD
+    val output = EncoderOutput(
+      QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(quality)),
+      listener,
+    )
+    val useCase = VideoCapture.Builder(output)
+      .setTargetFrameRate(Range(request.fps, request.fps))
+      // Orientation is fixed when recording starts (spec §3.2).
+      .setTargetRotation(container.display?.rotation ?: Surface.ROTATION_0)
+      .build()
+    try {
+      // Rebinding with the preview: the camera reconfigures for both streams.
+      cameraProvider.bindToLifecycle(this, cam.cameraInfo.cameraSelector, previewUseCase, useCase)
+    } catch (e: Exception) {
+      listener.onSourceLost()
+      return
+    }
+    videoCapture = useCase
+    val observer = Observer<CameraState> { state ->
+      // Another app took the camera, or it failed. (CLOSED alone also happens on rebinds.)
+      if (state.error != null) listener.onSourceLost()
+    }
+    cam.cameraInfo.cameraState.observe(this, observer)
+    cameraStateObserver = observer
+  }
+
+  override fun stop() {
+    cameraStateObserver?.let { camera?.cameraInfo?.cameraState?.removeObserver(it) }
+    cameraStateObserver = null
+    videoCapture?.let { provider?.unbind(it) }
+    videoCapture = null
+  }
+
+  /**
+   * Hands CameraX's video Surface request to the recording encoder. Uses
+   * CameraX's library-internal [VideoOutput] hooks (MediaSpec, Timebase):
+   * public `Recorder` can only write regular MP4, not fragmented MP4.
+   */
+  @SuppressLint("RestrictedApi")
+  private inner class EncoderOutput(
+    qualitySelector: QualitySelector,
+    private val listener: VideoFrameListener,
+  ) : VideoOutput {
+    private val mediaSpec = MediaSpec.builder()
+      .configureVideo { it.setQualitySelector(qualitySelector) }
+      .build()
+    private var requested = false
+
+    override fun getMediaSpec(): Observable<MediaSpec> = ConstantObservable.withValue(mediaSpec)
+
+    override fun onSurfaceRequested(request: SurfaceRequest) =
+      onSurfaceRequested(request, Timebase.UPTIME, false)
+
+    override fun onSurfaceRequested(request: SurfaceRequest, timebase: Timebase, hasGlProcessing: Boolean) {
+      val executor = ContextCompat.getMainExecutor(context)
+      request.setTransformationInfoListener(executor) { info ->
+        if (requested) return@setTransformationInfoListener
+        requested = true
+        listener.onSurfaceRequested(
+          request.resolution.width,
+          request.resolution.height,
+          info.rotationDegrees,
+          realtimeTimestamps = timebase == Timebase.REALTIME,
+        ) { surface -> request.provideSurface(surface, executor) {} }
+      }
+    }
   }
 
   private companion object {
