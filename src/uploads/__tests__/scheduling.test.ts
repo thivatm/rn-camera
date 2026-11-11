@@ -31,12 +31,36 @@ const CELLULAR: ConnectivityState = {
 const OTHER: ConnectivityState = { isConnected: true, networkType: 'other' };
 const OFFLINE: ConnectivityState = { isConnected: false, networkType: 'none' };
 
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+// Waits are on conditions (a state, a server record), never on elapsed time,
+// so a slow machine only makes a test slower. The deadline is a safety net
+// below Jest's timeout, to fail with a clear assertion.
+jest.setTimeout(60_000);
+const DEADLINE_MS = 45_000;
 
-async function until(condition: () => boolean) {
-  for (let i = 0; i < 600 && !condition(); i++) await tick();
-  expect(condition()).toBe(true);
+const nextTurn = () => new Promise((r) => setTimeout(r, 1));
+
+async function until(condition: () => boolean | Promise<boolean>) {
+  const deadline = Date.now() + DEADLINE_MS;
+  while (!(await condition()) && Date.now() < deadline) await nextTurn();
+  expect(await condition()).toBe(true);
 }
+
+/**
+ * Lets a wrong implementation send what it should not, for a check that
+ * nothing happened. Passing never depends on it: a correct one sends nothing
+ * however long this is.
+ */
+const quietPeriod = () => new Promise((r) => setTimeout(r, 100));
+
+/**
+ * The requests to `uploadId` from index `from` on, apart from a Chunk that
+ * was cut short (`dropped`, e.g. the one in flight when the upload paused).
+ */
+const answeredRequestsSince = (uploadId: string, from: number) =>
+  server
+    .getUpload(uploadId)
+    .requests.slice(from)
+    .filter((r) => r.status !== 'dropped');
 
 function bytes(length: number, seed: number) {
   const buf = Buffer.alloc(length);
@@ -84,18 +108,25 @@ function setup(
   });
   /** `${id}:${state}[/${pauseReason}]`, in order. */
   const log: string[] = [];
-  uploads.addListener('uploadStateChange', (e) =>
-    log.push(
-      `${e.recordingId}:${e.state}${e.pauseReason ? `/${e.pauseReason}` : ''}`
-    )
-  );
+  const watchers: Array<{ entry: string; run: () => void }> = [];
+  uploads.addListener('uploadStateChange', (e) => {
+    const entry = `${e.recordingId}:${e.state}${e.pauseReason ? `/${e.pauseReason}` : ''}`;
+    log.push(entry);
+    for (const w of watchers.filter((x) => x.entry === entry)) w.run();
+  });
+  /** Captures `read()` at the moment `entry` is logged. */
+  const at = <T>(entry: string, read: () => T) => {
+    const captured: { value?: T } = {};
+    watchers.push({ entry, run: () => (captured.value ??= read()) });
+    return captured;
+  };
   const statesOf = (id: string) =>
     log
       .filter((l) => l.startsWith(`${id}:`))
       .map((l) => l.slice(id.length + 1));
   const recording = async (id: string) =>
     (await uploads.getRecordings()).find((r) => r.id === id)!;
-  return { uploads, platform, appState, log, statesOf, recording };
+  return { uploads, platform, appState, log, at, statesOf, recording };
 }
 
 type Setup = ReturnType<typeof setup>;
@@ -146,16 +177,30 @@ describe('Live Recording priority', () => {
     recordAndStop(s, 'a', a);
     await until(() => server.getUpload(a.id).committedOffset > 0);
 
+    const atPause = s.at(
+      'a:paused/deprioritized',
+      () => server.getUpload(a.id).requests.length
+    );
+    const atLiveDone = s.at(
+      'b:completed',
+      () => server.getUpload(a.id).requests.length
+    );
     const b = source('b', 1000);
     startLive(s, 'b', b);
-    await until(() => s.statesOf('a').includes('paused/deprioritized'));
-    const requestsWhilePaused = server.getUpload(a.id).requests.length;
-    await tick(100);
-    expect(server.getUpload(a.id).requests).toHaveLength(requestsWhilePaused);
+    await until(() => atPause.value !== undefined);
+    await quietPeriod();
 
     s.uploads.reportFileGrowth('b', 1000);
     s.uploads.reportRecordingStopped('b', { finalSize: 1000, reason: 'user' });
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
+    // Nothing for A while B was live.
+    expect(
+      server
+        .getUpload(a.id)
+        .requests.slice(atPause.value, atLiveDone.value)
+        .filter((r) => r.status !== 'dropped')
+    ).toEqual([]);
 
     expect(server.getUpload(b.id).complete).toBe(true);
     expect(server.getUpload(a.id).bytes.equals(a.content)).toBe(true);
@@ -178,18 +223,25 @@ describe('Live Recording priority', () => {
     const live = source('live', 1000);
     startLive(s, 'live', live);
     const a = server.createUpload();
+    const atLiveDone = s.at('live:completed', () => ({
+      states: s.statesOf('a'),
+      requests: server.getUpload(a.id).requests.length,
+    }));
     await s.uploads.resumeUploads({ uploadUrlProvider: provider(a) });
     await until(() => s.statesOf('a').length > 0);
-    await tick(50);
-    expect(s.statesOf('a')).toEqual(['paused/deprioritized']);
-    expect(server.getUpload(a.id).requests).toHaveLength(0);
+    await quietPeriod();
 
     s.uploads.reportFileGrowth('live', 1000);
     s.uploads.reportRecordingStopped('live', {
       finalSize: 1000,
       reason: 'user',
     });
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
+    expect(atLiveDone.value).toEqual({
+      states: ['paused/deprioritized'],
+      requests: 0,
+    });
   });
 
   test('deleteRecording rejects on the Live Recording', async () => {
@@ -226,7 +278,14 @@ async function persistedWithoutTargets(
       reason: 'user',
     });
   }
-  await tick(30);
+  // Every Recording is stored as stopped.
+  await until(() =>
+    names.every(
+      (name) =>
+        JSON.parse(kv.get(`rnCamera.uploads.recording.${name}`) ?? '{}')
+          .isLive === false
+    )
+  );
   first.platform.setConnectivity(OFFLINE);
   return new Map(kv);
 }
@@ -264,13 +323,13 @@ describe('app backgrounded', () => {
     s.uploads.reportFileGrowth('live', 20 * MIB);
     await until(() => server.getUpload(live.id).committedOffset > 0);
 
+    const atBackground = server.getUpload(live.id).requests.length;
     s.appState.set('background');
     expect((await s.recording('live')).pauseReason).toBe('backgrounded');
     expect((await s.recording('a')).pauseReason).toBe('backgrounded');
-    await tick(20);
-    const requests = server.getUpload(live.id).requests.length;
-    await tick(100);
-    expect(server.getUpload(live.id).requests).toHaveLength(requests);
+    await quietPeriod();
+    expect(answeredRequestsSince(live.id, atBackground)).toEqual([]);
+    expect(server.getUpload(a.id).requests).toHaveLength(0);
 
     s.appState.set('active');
     expect((await s.recording('live')).uploadState).toBe('uploading');
@@ -280,7 +339,8 @@ describe('app backgrounded', () => {
       finalSize: 20 * MIB,
       reason: 'user',
     });
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
     expect(server.getUpload(live.id).bytes.equals(live.content)).toBe(true);
   });
 
@@ -290,12 +350,13 @@ describe('app backgrounded', () => {
     const a = source('a', 1000);
     recordAndStop(s, 'a', a);
     await until(() => s.statesOf('a').length > 0);
-    await tick(50);
+    await quietPeriod();
     expect(s.statesOf('a')).toEqual(['paused/backgrounded']);
     expect(server.getUpload(a.id).requests).toHaveLength(0);
 
     s.appState.set('active');
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
   });
 });
 
@@ -308,7 +369,8 @@ describe('Allow Cellular = false', () => {
     recordAndStop(s, 'a', a, noCellular);
     await until(() => server.getUpload(a.id).committedOffset > 0);
     s.platform.setConnectivity(CELLULAR);
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
     expect(s.statesOf('a')).toEqual(['uploading', 'finalizing', 'completed']);
   });
 
@@ -318,19 +380,19 @@ describe('Allow Cellular = false', () => {
     recordAndStop(s, 'a', a, noCellular);
     await until(() => server.getUpload(a.id).committedOffset > 0);
 
+    const atOffline = server.getUpload(a.id).requests.length;
     s.platform.setConnectivity(OFFLINE);
     s.platform.setConnectivity(CELLULAR);
     expect(await s.recording('a')).toMatchObject({
       uploadState: 'paused',
       pauseReason: 'awaitingWifi',
     });
-    await tick(20);
-    const requests = server.getUpload(a.id).requests.length;
-    await tick(100);
-    expect(server.getUpload(a.id).requests).toHaveLength(requests);
+    await quietPeriod();
+    expect(answeredRequestsSince(a.id, atOffline)).toEqual([]);
 
     s.platform.setConnectivity(OTHER);
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
     expect(server.getUpload(a.id).bytes.equals(a.content)).toBe(true);
     expect(s.statesOf('a').slice(0, 4)).toEqual([
       'uploading',
@@ -348,7 +410,8 @@ describe('Allow Cellular = false', () => {
 
     const b = source('b', 1000);
     recordAndStop(s, 'b', b, noCellular);
-    await until(() => server.getUpload(b.id).complete);
+    await until(() => s.log.includes('b:completed'));
+    expect(server.getUpload(b.id).complete).toBe(true);
     await until(() => s.statesOf('a').includes('paused/awaitingWifi'));
     expect(s.statesOf('a')).toEqual([
       'uploading',
@@ -357,7 +420,8 @@ describe('Allow Cellular = false', () => {
     ]);
 
     s.platform.setConnectivity(WIFI);
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
   });
 
   test('after a relaunch, resumeUploads on cellular waits for Wi-Fi', async () => {
@@ -366,11 +430,13 @@ describe('Allow Cellular = false', () => {
     const a = server.createUpload();
     await s.uploads.resumeUploads({ uploadUrlProvider: provider(a) });
     await until(() => s.statesOf('a').length > 0);
-    await tick(50);
+    await quietPeriod();
     expect(s.statesOf('a')).toEqual(['paused/awaitingWifi']);
+    expect(server.getUpload(a.id).requests).toHaveLength(0);
 
     s.platform.setConnectivity(WIFI);
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
   });
 
   test('Allow Cellular = true (default) restarts on cellular', async () => {
@@ -380,7 +446,8 @@ describe('Allow Cellular = false', () => {
     await until(() => server.getUpload(a.id).committedOffset > 0);
     s.platform.setConnectivity(OFFLINE);
     s.platform.setConnectivity(CELLULAR);
-    await until(() => server.getUpload(a.id).complete);
+    await until(() => s.log.includes('a:completed'));
+    expect(server.getUpload(a.id).complete).toBe(true);
     expect(s.statesOf('a')).not.toContain('paused/awaitingWifi');
   });
 });
@@ -392,12 +459,8 @@ describe('Keep Recording File', () => {
     recordAndStop(s, 'a', a, { keepRecordingFile: false });
     await until(() => !fs.existsSync(a.filePath));
     expect(server.getUpload(a.id).complete).toBe(true);
-    await until(() => s.log.includes('a:completed'));
-    await tick(20);
-    expect(await s.recording('a')).toMatchObject({
-      uploadState: 'completed',
-      filePath: null,
-    });
+    await until(async () => (await s.recording('a')).filePath === null);
+    expect(await s.recording('a')).toMatchObject({ uploadState: 'completed' });
   });
 
   test('false: a failed upload keeps its file', async () => {
@@ -412,7 +475,7 @@ describe('Keep Recording File', () => {
       { keepRecordingFile: false }
     );
     await until(() => s.log.includes('a:failed'));
-    await tick(50);
+    await quietPeriod();
     expect(fs.existsSync(filePath)).toBe(true);
     expect((await s.recording('a')).filePath).toBe(filePath);
   });
@@ -422,7 +485,7 @@ describe('Keep Recording File', () => {
     const a = source('a', 1000);
     recordAndStop(s, 'a', a);
     await until(() => s.log.includes('a:completed'));
-    await tick(50);
+    await quietPeriod();
     expect(fs.existsSync(a.filePath)).toBe(true);
     expect((await s.recording('a')).filePath).toBe(a.filePath);
   });
