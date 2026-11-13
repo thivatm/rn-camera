@@ -31,7 +31,6 @@ public final class StreamingCameraHostView: UIView {
   @objc public var onCameraError: ((String, String) -> Void)?
 
   // MARK: - Props
-
   /// `"front"` | `"back"`.
   @objc public var position = "back" {
     // Ignored while recording; applied once the recording stops.
@@ -68,7 +67,6 @@ public final class StreamingCameraHostView: UIView {
   @objc public var audio = true
 
   // MARK: - Lifecycle
-
   public init(
     frame: CGRect,
     authorizer: CameraAuthorizing,
@@ -145,7 +143,6 @@ public final class StreamingCameraHostView: UIView {
   }
 
   // MARK: - Recording
-
   /// Starts recording to `<recordingsDirectory>/<recordingId>.mp4`. Reports
   /// `recordingStarted`, or `recordingFailed` while another recording is live
   /// or the camera is not showing.
@@ -201,7 +198,6 @@ public final class StreamingCameraHostView: UIView {
   }
 
   // MARK: - Gestures
-
   private func setGesture(_ recognizer: UIGestureRecognizer, enabled: Bool) {
     if enabled {
       if !(gestureRecognizers?.contains(recognizer) ?? false) { addGestureRecognizer(recognizer) }

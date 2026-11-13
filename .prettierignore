@@ -1,0 +1,9 @@
+# Prettier also skips everything in .gitignore.
+.yarn/
+example/ios/Pods/
+example/android/app/build/
+**/build/
+coverage/
+lib/
+# Managed by Xcode.
+**/*.xcassets/

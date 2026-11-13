@@ -33,7 +33,7 @@ _Avoid_: Segment, part
 ### Upload
 
 **Upload URL**:
-A resumable, chunk-accepting upload endpoint (e.g. a Mux direct upload URL) that the Host App's own backend creates and hands to the library. The library never creates one itself.
+A resumable, chunk-accepting upload endpoint that the Host App's own backend creates and hands to the library. The library never creates one itself.
 _Avoid_: Endpoint, server, backend
 
 **Upload URL Provider**:
@@ -53,7 +53,7 @@ Bytes written to the Recording File but not yet covered by the Committed Offset.
 _Avoid_: Queue, pending data
 
 **Upload Complete**:
-The Upload URL has accepted the final Chunk. Says nothing about whether the destination (e.g. Mux) has finished processing the video.
+The Upload URL has accepted the final Chunk. Says nothing about whether the destination has finished processing the video.
 _Avoid_: Done, ready, processed
 
 **Upload Queue**:

@@ -1,7 +1,14 @@
 {
-  "extends": "./tsconfig",
-  "compilerOptions": {
-    "types": []
-  },
-  "exclude": ["example", "lib", "mock-server", "**/__tests__", "**/__fixtures__", "**/__mocks__"]
+    "extends": "./tsconfig",
+    "compilerOptions": {
+        "types": []
+    },
+    "exclude": [
+        "example",
+        "lib",
+        "mock-server",
+        "**/__tests__",
+        "**/__fixtures__",
+        "**/__mocks__"
+    ]
 }

@@ -10,6 +10,6 @@ export const BACKOFF_CAP_MS = 30_000;
  * the nominal step, spread out across devices, and never exceed 30 s.
  */
 export function backoffDelay(attempt: number, random: () => number): number {
-  const step = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt);
-  return Math.min(BACKOFF_CAP_MS, Math.round(step * (0.5 + random())));
+    const step = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt);
+    return Math.min(BACKOFF_CAP_MS, Math.round(step * (0.5 + random())));
 }

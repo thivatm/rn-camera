@@ -21,7 +21,7 @@ class StreamingCameraViewManager :
   override fun createViewInstance(context: ThemedReactContext): StreamingCameraView =
     StreamingCameraView(context)
 
-  override fun setPosition(view: StreamingCameraView, value: String?) =
+  override fun setCameraPosition(view: StreamingCameraView, value: String?) =
     view.controller.setPosition(value)
 
   override fun setTorch(view: StreamingCameraView, value: Boolean) =

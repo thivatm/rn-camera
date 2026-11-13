@@ -11,9 +11,9 @@ const root = path.resolve(__dirname, '..');
  * @type {import('metro-config').MetroConfig}
  */
 const config = withMetroConfig(getDefaultConfig(__dirname), {
-  root,
-  dirname: __dirname,
-  conditions: ['thivatm-rn-camera-source'],
+    root,
+    dirname: __dirname,
+    conditions: ['thivatm-rn-camera-source'],
 });
 
 module.exports = config;

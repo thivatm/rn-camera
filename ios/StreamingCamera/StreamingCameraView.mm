@@ -40,7 +40,7 @@ using namespace facebook::react;
 {
   const auto &newProps = *std::static_pointer_cast<const StreamingCameraProps>(props);
 
-  _hostView.position = newProps.position == StreamingCameraPosition::Front ? @"front" : @"back";
+  _hostView.position = newProps.cameraPosition == StreamingCameraCameraPosition::Front ? @"front" : @"back";
   _hostView.torch = newProps.torch;
   _hostView.zoom = newProps.zoom;
   _hostView.enablePinchToZoom = newProps.enablePinchToZoom;

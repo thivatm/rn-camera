@@ -7,83 +7,83 @@ export type RecordingId = string;
 export type Metadata = Record<string, unknown>;
 
 export type UploadTarget = {
-  url: string;
-  /** Sent on every Chunk request. */
-  headers?: Record<string, string>;
+    url: string;
+    /** Sent on every Chunk request. */
+    headers?: Record<string, string>;
 };
 
 export type UploadUrlProvider = (ctx: {
-  recordingId: RecordingId;
-  metadata?: Metadata;
+    recordingId: RecordingId;
+    metadata?: Metadata;
 }) => Promise<UploadTarget>;
 
 export type StartRecordingOptions = {
-  uploadUrlProvider: UploadUrlProvider;
-  /** Default `true`. */
-  keepRecordingFile?: boolean;
-  /** Default `true`. */
-  allowCellular?: boolean;
-  metadata?: Metadata;
-  /** Default: none. */
-  maxDurationSeconds?: number;
-  /** Bytes, multiple of 256 KiB. Default 1 MiB. */
-  minChunkSize?: number;
+    uploadUrlProvider: UploadUrlProvider;
+    /** Default `true`. */
+    keepRecordingFile?: boolean;
+    /** Default `true`. */
+    allowCellular?: boolean;
+    metadata?: Metadata;
+    /** Default: none. */
+    maxDurationSeconds?: number;
+    /** Bytes, multiple of 256 KiB. Default 1 MiB. */
+    minChunkSize?: number;
 };
 
 export type StopReason =
-  'user' | 'interrupted' | 'lowStorage' | 'maxDuration' | 'backgrounded';
+    'user' | 'interrupted' | 'lowStorage' | 'maxDuration' | 'backgrounded';
 
 export type UploadState =
-  | 'waitingForUrl'
-  | 'uploading'
-  | 'paused'
-  | 'finalizing'
-  | 'completed'
-  | 'failed';
+    | 'waitingForUrl'
+    | 'uploading'
+    | 'paused'
+    | 'finalizing'
+    | 'completed'
+    | 'failed';
 
 export type PauseReason =
-  | 'offline'
-  | 'backgrounded'
-  | 'deprioritized'
-  | 'awaitingWifi'
-  | 'awaitingResume';
+    | 'offline'
+    | 'backgrounded'
+    | 'deprioritized'
+    | 'awaitingWifi'
+    | 'awaitingResume';
 
 export type Recording = {
-  id: RecordingId;
-  metadata?: Metadata;
-  isLive: boolean;
-  /** `true` = Interrupted Recording (app killed mid-capture). */
-  interrupted: boolean;
-  /** Set once Finished. */
-  stopReason?: StopReason;
-  /** `null` once deleted. */
-  filePath: string | null;
-  recordedBytes: number;
-  committedOffset: number;
-  uploadState: UploadState;
-  pauseReason?: PauseReason;
-  error?: UploadError;
-  keepRecordingFile: boolean;
-  allowCellular: boolean;
-  /** ISO 8601. */
-  createdAt: string;
+    id: RecordingId;
+    metadata?: Metadata;
+    isLive: boolean;
+    /** `true` = Interrupted Recording (app killed mid-capture). */
+    interrupted: boolean;
+    /** Set once Finished. */
+    stopReason?: StopReason;
+    /** `null` once deleted. */
+    filePath: string | null;
+    recordedBytes: number;
+    committedOffset: number;
+    uploadState: UploadState;
+    pauseReason?: PauseReason;
+    error?: UploadError;
+    keepRecordingFile: boolean;
+    allowCellular: boolean;
+    /** ISO 8601. */
+    createdAt: string;
 };
 
 export type UploadError = {
-  code: 'urlProviderFailed' | 'urlRejected' | 'fileMissing' | 'unknown';
-  httpStatus?: number;
-  message: string;
+    code: 'urlProviderFailed' | 'urlRejected' | 'fileMissing' | 'unknown';
+    httpStatus?: number;
+    message: string;
 };
 
 // ---- §3.4 Permissions. `PermissionStatus` is not spelled out in the spec;
 // this shape is shared by the iOS and Android implementations.
 
 export type PermissionState =
-  'granted' | 'denied' | 'undetermined' | 'restricted';
+    'granted' | 'denied' | 'undetermined' | 'restricted';
 
 export type PermissionStatus = {
-  camera: PermissionState;
-  microphone: PermissionState;
+    camera: PermissionState;
+    microphone: PermissionState;
 };
 
 // ---- §3.2 `<StreamingCamera>`
@@ -91,17 +91,17 @@ export type PermissionStatus = {
 export type CameraPosition = 'front' | 'back';
 
 export type VideoOptions = {
-  /** Default `'h264'`. */
-  codec?: 'h264' | 'hevc';
-  /** Default `'1080p'`. */
-  resolution?: '720p' | '1080p';
-  fps?: number;
-  /** Bits per second. */
-  bitrate?: number;
+    /** Default `'h264'`. */
+    codec?: 'h264' | 'hevc';
+    /** Default `'1080p'`. */
+    resolution?: '720p' | '1080p';
+    fps?: number;
+    /** Bits per second. */
+    bitrate?: number;
 };
 
 /** Passed to `onError`. Without the required permissions nothing renders. */
 export type CameraError = {
-  code: 'permissionMissing' | 'cameraUnavailable' | 'unknown';
-  message: string;
+    code: 'permissionMissing' | 'cameraUnavailable' | 'unknown';
+    message: string;
 };

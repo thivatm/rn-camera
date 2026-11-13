@@ -2,7 +2,6 @@
 
 Contributions are always welcome, no matter how large or small!
 
-
 ## Development workflow
 
 This project is a monorepo managed using [Yarn workspaces](https://yarnpkg.com/features/workspaces). It contains the following packages:
@@ -65,8 +64,6 @@ To fix formatting errors, run the following:
 ```sh
 yarn lint --fix
 ```
-
-
 
 ### Scripts
 
